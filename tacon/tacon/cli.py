@@ -308,14 +308,20 @@ def resume(
 
 
 @app.command()
-def ui() -> None:
-    """Textual TUI. Coming in v0.1.x."""
-    err_console.print(
-        "tacon ui is not implemented yet. The TUI lands in v0.1.x.\n"
-        "See: ~/.gstack/projects/gstack-test/tzun-main-design-20260505-155527.md "
-        "(Textual layout section)"
-    )
-    raise typer.Exit(2)
+def ui(
+    db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
+) -> None:
+    """Open the read-only TUI: ops on the left, events on the right."""
+    try:
+        from tacon.tui import TaconApp
+    except ImportError as exc:
+        err_console.print(
+            f"TUI unavailable: {exc}. Install with: pip install 'tacon[tui]'"
+        )
+        raise typer.Exit(2) from exc
+
+    app_inst = TaconApp(db_path or _default_db_path())
+    app_inst.run()
 
 
 @app.command()

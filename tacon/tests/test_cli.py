@@ -97,11 +97,26 @@ def test_run_add_file_missing_args_exits_2() -> None:
     assert result.exit_code == 2
 
 
-def test_ui_command_is_stub() -> None:
-    result = runner.invoke(app, ["ui"])
-    assert result.exit_code == 2
-    output = (result.stdout or "") + (result.stderr or "")
-    assert "not implemented" in output
+def test_ui_command_constructs_tui_app(tmp_path: Path, monkeypatch) -> None:
+    """`tacon ui` constructs and runs TaconApp. We mock .run() so the test
+    doesn't try to attach to a tty."""
+    db_path = tmp_path / "tacon.db"
+    open_db(db_path)  # create empty schema
+
+    captured: dict[str, object] = {}
+
+    class FakeTUI:
+        def __init__(self, db_path: Path) -> None:
+            captured["db_path"] = db_path
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    monkeypatch.setattr("tacon.tui.TaconApp", FakeTUI)
+    result = runner.invoke(app, ["ui", "--db", str(db_path)])
+    assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
+    assert captured["ran"] is True
+    assert captured["db_path"] == db_path
 
 
 def test_dashboard_publish_not_yet_wired_exits_2() -> None:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tacon"
-version = "0.0.1"
+version = "0.1.0"
 description = "TA console: a workbench for GitHub Classroom batch ops + class-health dashboard"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,11 +35,13 @@ dependencies = [
 dev = [
     "pytest >= 8.0",
     "pytest-cov >= 5.0",
+    "pytest-asyncio >= 0.23",
     "responses >= 0.25",
     "ruff >= 0.5",
     "mypy >= 1.10",
     "types-requests",
     "types-PyYAML",
+    "textual >= 0.70",
 ]
 tui = [
     "textual >= 0.70",
@@ -80,7 +82,12 @@ testpaths = ["tests"]
 # History: started at 70% for the v0.0.1 foundation, bumped to 90% once CLI
 # orchestration + github_client edge paths got integration coverage.
 addopts = "-ra --strict-markers --cov=tacon --cov-report=term-missing --cov-fail-under=90"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["tacon"]
-omit = ["tacon/tui/*"]  # TUI not yet implemented; dashboard now ships
+# Both UI and dashboard now ship; nothing to omit here. (Keep this stanza
+# in case future code that's hard to cover — eg. signal handlers — needs
+# to be excluded.)
+omit = []
