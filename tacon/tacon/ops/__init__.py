@@ -133,9 +133,34 @@ class Op(ABC):
 
 # ---------- Op registry ----------
 
-# Populated by ops/add_file.py and friends. cli.rollback() looks up the class
-# from events.op_class, then calls cls.rollback(db, gh, op_id).
+# Populated by submodules (e.g. ops/add_file.py) via register() at import time.
+# cli.rollback() looks up the class from events.op_class, then calls
+# cls.rollback(db, gh, op_id).
 _REGISTRY: dict[str, type[Op]] = {}
+
+# Auto-discovery: importing every public submodule of tacon.ops triggers each
+# module's register() call. This means a new op file dropped into tacon/ops/
+# is available to list_ops() / get_op_class() without touching cli.py.
+# Discovery runs lazily on first use (and only once) to avoid import races.
+_DISCOVERED: bool = False
+
+
+def _ensure_discovered() -> None:
+    global _DISCOVERED
+    if _DISCOVERED:
+        return
+    # Mark first to make this re-entrant — a submodule's import-time code
+    # could conceivably call back into list_ops() / get_op_class().
+    _DISCOVERED = True
+    import importlib
+    import pkgutil
+
+    import tacon.ops as _pkg
+
+    for module_info in pkgutil.iter_modules(_pkg.__path__):
+        if module_info.name.startswith("_"):
+            continue
+        importlib.import_module(f"tacon.ops.{module_info.name}")
 
 
 def register(name: str, op_cls: type[Op]) -> None:
@@ -145,10 +170,12 @@ def register(name: str, op_cls: type[Op]) -> None:
 
 
 def get_op_class(name: str) -> type[Op]:
+    _ensure_discovered()
     if name not in _REGISTRY:
         raise KeyError(f"Unknown op '{name}'. Registered: {sorted(_REGISTRY.keys())}")
     return _REGISTRY[name]
 
 
 def list_ops() -> list[str]:
+    _ensure_discovered()
     return sorted(_REGISTRY.keys())
