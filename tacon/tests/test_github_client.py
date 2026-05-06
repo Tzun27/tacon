@@ -442,7 +442,13 @@ class TestRateLimitedClientConstructor:
 
         client = RateLimitedClient(token="explicit-tok", rate_per_sec=2.0, max_retries=5)
         assert called["resolver"] is False
-        fake_github_cls.assert_called_once_with("explicit-tok", per_page=100)
+        # Github() is invoked with auth=Auth.Token(<token>); the Auth.Token
+        # wrapper holds the token value but Auth doesn't expose it for
+        # direct comparison, so we assert on call shape instead.
+        fake_github_cls.assert_called_once()
+        kwargs = fake_github_cls.call_args.kwargs
+        assert kwargs["per_page"] == 100
+        assert kwargs["auth"].token == "explicit-tok"
         assert client._rate == 2.0  # type: ignore[attr-defined]
         assert client._max_retries == 5  # type: ignore[attr-defined]
 
@@ -456,7 +462,10 @@ class TestRateLimitedClientConstructor:
         monkeypatch.setattr(github_client, "Github", fake_github_cls)
 
         RateLimitedClient(rate_per_sec=3.0)
-        fake_github_cls.assert_called_once_with("resolved", per_page=100)
+        fake_github_cls.assert_called_once()
+        kwargs = fake_github_cls.call_args.kwargs
+        assert kwargs["per_page"] == 100
+        assert kwargs["auth"].token == "resolved"
 
     def test_init_clamps_rate_to_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from tacon import github_client

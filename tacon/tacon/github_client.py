@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from github import (
+    Auth,
     Github,
     GithubException,
     RateLimitExceededException,
@@ -118,7 +119,7 @@ class RateLimitedClient:
         max_retries: int = MAX_BACKOFF_RETRIES,
     ) -> None:
         self._token = token or get_default_token()
-        self._gh = Github(self._token, per_page=100)
+        self._gh = Github(auth=Auth.Token(self._token), per_page=100)
         self._rate = max(rate_per_sec, 0.1)
         self._max_retries = max_retries
         self._next_call_at = 0.0
