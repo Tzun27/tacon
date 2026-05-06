@@ -325,14 +325,29 @@ def dashboard(
         str | None,
         typer.Option("--publish", help="<owner>/<repo> to push static site to gh-pages."),
     ] = None,
+    db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
 ) -> None:
-    """Static dashboard renderer. Coming in v0.1.x."""
-    err_console.print(
-        "tacon dashboard is not implemented yet. The static renderer lands in v0.1.x.\n"
-        "See: ~/.gstack/projects/gstack-test/tzun-main-design-20260505-155527.md "
-        "(Dashboard render contract section)"
+    """Render the events table to a static HTML dashboard.
+
+    --publish to a gh-pages branch is not yet wired (lands in v0.1.x).
+    """
+    if publish:
+        err_console.print(
+            "--publish is not yet wired. For now, render with --out and push the "
+            "resulting directory to gh-pages yourself."
+        )
+        raise typer.Exit(2)
+
+    from tacon.dashboard import render
+
+    out_dir = out or (Path.cwd() / "tacon-dashboard")
+    db = open_db(db_path or _default_db_path())
+    stats = render(db, out_dir)
+    console.print(
+        f"[green]✓[/green] Rendered {stats['ops']} ops, {stats['events']} events, "
+        f"{stats['repos']} repos to [bold]{out_dir}[/bold]"
     )
-    raise typer.Exit(2)
+    console.print(f"[dim]open {out_dir}/index.html in your browser[/dim]")
 
 
 # ---------- version ----------

@@ -104,9 +104,11 @@ def test_ui_command_is_stub() -> None:
     assert "not implemented" in output
 
 
-def test_dashboard_command_is_stub() -> None:
-    result = runner.invoke(app, ["dashboard"])
+def test_dashboard_publish_not_yet_wired_exits_2() -> None:
+    result = runner.invoke(app, ["dashboard", "--publish", "tzun/site"])
     assert result.exit_code == 2
+    output = (result.stdout or "") + (result.stderr or "")
+    assert "--publish" in output
 
 
 @patch("tacon.cli.discover_via_csv")

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}tacon dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="{{ asset_root|default('') }}style.css">
+</head>
+<body>
+  <header>
+    <h1><a href="{{ asset_root|default('') }}index.html">tacon</a></h1>
+    <span class="sub">v{{ tacon_version }} · generated {{ generated_at }}</span>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <a href="https://github.com/tzun/tacon">tacon</a> &middot; static dashboard, no JS
+  </footer>
+</body>
+</html>

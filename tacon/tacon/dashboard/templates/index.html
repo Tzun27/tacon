@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}tacon — overview{% endblock %}
+{% block content %}
+
+<section>
+  <h2>Ops ({{ ops|length }})</h2>
+  {% if ops %}
+  <table>
+    <thead>
+      <tr>
+        <th>op_id</th>
+        <th>op_class</th>
+        <th>started</th>
+        <th>applied</th>
+        <th>failed</th>
+        <th>skipped</th>
+        <th>reported</th>
+        <th>rolled_back</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for op in ops %}
+      <tr>
+        <td><a href="op/{{ op.op_id }}.html"><code>{{ op.op_id[:8] }}</code></a></td>
+        <td><code>{{ op.op_class }}</code></td>
+        <td class="muted">{{ op.started_at }}</td>
+        <td>{% if op.n_applied %}<span class="status status-applied">{{ op.n_applied }}</span>{% endif %}</td>
+        <td>{% if op.n_failed %}<span class="status status-failed">{{ op.n_failed }}</span>{% endif %}</td>
+        <td>{% if op.n_skipped %}<span class="status status-skipped">{{ op.n_skipped }}</span>{% endif %}</td>
+        <td>{% if op.n_reported %}<span class="status status-reported">{{ op.n_reported }}</span>{% endif %}</td>
+        <td>{% if op.n_rolled_back %}<span class="status status-rolled_back">{{ op.n_rolled_back }}</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No ops have been recorded yet. Run <code>tacon run &lt;op&gt; --apply</code>.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Repos &times; ops grid</h2>
+  {% if repos and grid_columns %}
+  <table>
+    <thead>
+      <tr>
+        <th>repo</th>
+        <th>student</th>
+        {% for op in grid_columns %}
+        <th title="{{ op.op_class }}"><code>{{ op.op_id[:6] }}</code></th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for repo in repos %}
+      <tr>
+        <td><a href="repo/{{ repo.repo_id|replace('/', '__') }}.html"><code>{{ repo.repo_id }}</code></a></td>
+        <td>{{ repo.student_display_name }}</td>
+        {% for op in grid_columns %}
+        {% set cell = grid[repo.repo_id][op.op_id] if repo.repo_id in grid and op.op_id in grid[repo.repo_id] else None %}
+        <td>
+          {% if cell %}
+          <span class="cell s-{{ cell.status }}" title="{{ cell.status }}{% if cell.error_class %}: {{ cell.error_class }}{% endif %}"></span>
+          {% else %}
+          <span class="cell" title="no event"></span>
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No repos synced yet, or no ops applied.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Recent activity ({{ events|length }} events)</h2>
+  {% if events %}
+  <table>
+    <thead>
+      <tr>
+        <th>when</th>
+        <th>repo</th>
+        <th>student</th>
+        <th>op</th>
+        <th>status</th>
+        <th>error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events|reverse %}
+      <tr class="timeline-row">
+        <td class="muted">{{ e.created_at }}</td>
+        <td><a href="repo/{{ e.repo_id|replace('/', '__') }}.html"><code>{{ e.repo_id }}</code></a></td>
+        <td>{{ e.student_display_name }}</td>
+        <td><a href="op/{{ e.op_id }}.html"><code>{{ e.op_class }}</code></a></td>
+        <td><span class="status status-{{ e.status }}">{{ e.status }}</span></td>
+        <td class="muted">{{ e.error_message or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No activity yet.</p>
+  {% endif %}
+</section>
+
+{% endblock %}

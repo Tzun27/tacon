@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% set asset_root = "../" %}
+{% block title %}tacon — op {{ op.op_id[:8] }}{% endblock %}
+{% block content %}
+
+<section>
+  <h2><code>{{ op.op_class }}</code> &middot; <code>{{ op.op_id }}</code></h2>
+  <p class="muted">started {{ op.started_at }}</p>
+  <p>
+    {% if op.n_applied %}<span class="status status-applied">{{ op.n_applied }} applied</span>{% endif %}
+    {% if op.n_failed %}<span class="status status-failed">{{ op.n_failed }} failed</span>{% endif %}
+    {% if op.n_skipped %}<span class="status status-skipped">{{ op.n_skipped }} skipped</span>{% endif %}
+    {% if op.n_reported %}<span class="status status-reported">{{ op.n_reported }} reported</span>{% endif %}
+    {% if op.n_rolled_back %}<span class="status status-rolled_back">{{ op.n_rolled_back }} rolled_back</span>{% endif %}
+  </p>
+</section>
+
+<section>
+  <h2>Per-repo events</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>repo</th>
+        <th>student</th>
+        <th>status</th>
+        <th>commit</th>
+        <th>error_class</th>
+        <th>error_message</th>
+        <th>created_at</th>
+        <th>applied_at</th>
+        <th>rolled_back_at</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr class="timeline-row">
+        <td><a href="../repo/{{ e.repo_id|replace('/', '__') }}.html"><code>{{ e.repo_id }}</code></a></td>
+        <td>{{ e.student_display_name }}</td>
+        <td><span class="status status-{{ e.status }}">{{ e.status }}</span></td>
+        <td class="muted"><code>{{ (e.commit_sha or '')[:8] }}</code></td>
+        <td class="muted">{{ e.error_class or '' }}</td>
+        <td class="muted">{{ e.error_message or '' }}</td>
+        <td class="muted">{{ e.created_at or '' }}</td>
+        <td class="muted">{{ e.applied_at or '' }}</td>
+        <td class="muted">{{ e.rolled_back_at or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% endblock %}

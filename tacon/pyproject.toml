@@ -83,4 +83,4 @@ addopts = "-ra --strict-markers --cov=tacon --cov-report=term-missing --cov-fail
 
 [tool.coverage.run]
 source = ["tacon"]
-omit = ["tacon/tui/*", "tacon/dashboard/*"]  # not yet implemented
+omit = ["tacon/tui/*"]  # TUI not yet implemented; dashboard now ships

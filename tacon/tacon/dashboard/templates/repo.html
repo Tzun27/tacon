@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% set asset_root = "../" %}
+{% block title %}tacon — {{ repo.repo_id }}{% endblock %}
+{% block content %}
+
+<section>
+  <h2><code>{{ repo.repo_id }}</code></h2>
+  <p class="muted">student: {{ repo.student_display_name }} ({{ repo.student_id }}) &middot; assignment: <code>{{ repo.assignment_id }}</code></p>
+  {% if repo.last_event_status %}
+  <p>last status: <span class="status status-{{ repo.last_event_status }}">{{ repo.last_event_status }}</span> at <span class="muted">{{ repo.last_event_at }}</span></p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Event history</h2>
+  {% if events %}
+  <table>
+    <thead>
+      <tr>
+        <th>when</th>
+        <th>op</th>
+        <th>op_id</th>
+        <th>status</th>
+        <th>commit</th>
+        <th>error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events|reverse %}
+      <tr class="timeline-row">
+        <td class="muted">{{ e.created_at }}</td>
+        <td><code>{{ e.op_class }}</code></td>
+        <td><a href="../op/{{ e.op_id }}.html"><code>{{ e.op_id[:8] }}</code></a></td>
+        <td><span class="status status-{{ e.status }}">{{ e.status }}</span></td>
+        <td class="muted"><code>{{ (e.commit_sha or '')[:8] }}</code></td>
+        <td class="muted">{{ e.error_message or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No events for this repo yet.</p>
+  {% endif %}
+</section>
+
+{% endblock %}
