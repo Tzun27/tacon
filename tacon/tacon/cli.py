@@ -28,8 +28,9 @@ from tacon.db import (
     open_db,
 )
 from tacon.github_client import RateLimitedClient
-from tacon.ops import ConfirmCallback, RepoDiff, get_op_class, list_ops
+from tacon.ops import ConfirmCallback, Op, RepoDiff, get_op_class, list_ops
 from tacon.ops.add_file import AddFile
+from tacon.ops.delete_file import DeleteFile
 
 app = typer.Typer(
     name="tacon",
@@ -119,12 +120,22 @@ def run(
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
 ) -> None:
     """Plan or apply an Op across all active repos in scope."""
+    op: Op
     if op_name == "add-file":
         if not path or not content_from:
             err_console.print("add-file requires --path and --content-from")
             raise typer.Exit(2)
         content = content_from.read_text(encoding="utf-8")
         op = AddFile(path=path, content=content, message=message, assignment_id=assignment_id)
+    elif op_name == "delete-file":
+        if not path:
+            err_console.print("delete-file requires --path")
+            raise typer.Exit(2)
+        op = DeleteFile(
+            path=path,
+            message=message if message != "tacon: add file" else "tacon: delete file",
+            assignment_id=assignment_id,
+        )
     else:
         err_console.print(f"Unknown op: {op_name}. Available: {list_ops()}")
         raise typer.Exit(2)
@@ -159,9 +170,9 @@ def rollback(
         err_console.print(f"No events found for op_id={op_id}")
         raise typer.Exit(1)
 
-    # Map db's op_class field back to a registered op name. AddFile uses 'add_file'
-    # in events.op_class but is registered as 'add-file' in the op registry.
-    name_map = {"add_file": "add-file"}
+    # Map db's op_class field back to a registered op name. Ops use snake_case
+    # in events.op_class but are registered with kebab-case in the op registry.
+    name_map = {"add_file": "add-file", "delete_file": "delete-file"}
     op_cls = get_op_class(name_map.get(op_class, op_class))
 
     if not op_cls.supports_rollback:
