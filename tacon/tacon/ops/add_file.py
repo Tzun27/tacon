@@ -55,6 +55,11 @@ class AddFile(Op):
     requires_clone = False
     supports_rollback = True
 
+    # Subclasses (e.g. AddCIWorkflow) override to register a different op_class
+    # in the events table and registry without duplicating apply/rollback.
+    op_class_name: str = OP_CLASS
+    default_revert_message: str = "tacon: add file"
+
     def __init__(
         self,
         *,
@@ -83,7 +88,7 @@ class AddFile(Op):
     # ---------- plan ----------
 
     def plan(self, db: Database, gh: RateLimitedClient) -> Diff:
-        diff = Diff(op_class=OP_CLASS, op_args=self.args, per_repo=[])
+        diff = Diff(op_class=self.op_class_name, op_args=self.args, per_repo=[])
         for row in list_active_repos(db, assignment_id=self.assignment_id):
             repo_id = row["id"]
             student_id = row["student_id"]
@@ -156,7 +161,7 @@ class AddFile(Op):
             event_id = insert_event(
                 db,
                 op_id=op_id,
-                op_class=OP_CLASS,
+                op_class=self.op_class_name,
                 op_args_json=op_args_json,
                 tacon_version=__version__,
                 repo_id=repo_diff.repo_id,
@@ -257,7 +262,7 @@ class AddFile(Op):
         try:
             args = json.loads(first["op_args_json"])
             path = args["path"]
-            message = args.get("message") or "tacon: add file"
+            message = args.get("message") or cls.default_revert_message
         except (KeyError, json.JSONDecodeError) as e:
             raise RuntimeError(f"malformed op_args_json on op {op_id}: {e}") from e
 

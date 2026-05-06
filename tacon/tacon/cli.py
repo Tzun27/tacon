@@ -29,6 +29,7 @@ from tacon.db import (
 )
 from tacon.github_client import RateLimitedClient
 from tacon.ops import ConfirmCallback, Op, RepoDiff, get_op_class, list_ops
+from tacon.ops.add_ci_workflow import AddCIWorkflow, WorkflowValidationError
 from tacon.ops.add_file import AddFile
 from tacon.ops.delete_file import DeleteFile
 
@@ -101,11 +102,18 @@ def run(
     op_name: Annotated[str, typer.Argument(help=f"Op to run. Available: {list_ops()}")],
     path: Annotated[
         str | None,
-        typer.Option("--path", help="(add-file) Path within each repo to write to."),
+        typer.Option("--path", help="(add-file/delete-file) Path within each repo."),
     ] = None,
     content_from: Annotated[
         Path | None,
-        typer.Option("--content-from", help="(add-file) Local file whose content to push."),
+        typer.Option(
+            "--content-from",
+            help="(add-file/add-ci-workflow) Local file whose content to push.",
+        ),
+    ] = None,
+    workflow_name: Annotated[
+        str | None,
+        typer.Option("--workflow-name", help="(add-ci-workflow) Workflow filename stem."),
     ] = None,
     message: Annotated[
         str, typer.Option("--message", "-m", help="Commit message.")
@@ -136,6 +144,21 @@ def run(
             message=message if message != "tacon: add file" else "tacon: delete file",
             assignment_id=assignment_id,
         )
+    elif op_name == "add-ci-workflow":
+        if not workflow_name or not content_from:
+            err_console.print("add-ci-workflow requires --workflow-name and --content-from")
+            raise typer.Exit(2)
+        content = content_from.read_text(encoding="utf-8")
+        try:
+            op = AddCIWorkflow(
+                name=workflow_name,
+                content=content,
+                message=message if message != "tacon: add file" else None,
+                assignment_id=assignment_id,
+            )
+        except WorkflowValidationError as exc:
+            err_console.print(f"add-ci-workflow: invalid workflow: {exc}")
+            raise typer.Exit(2) from exc
     else:
         err_console.print(f"Unknown op: {op_name}. Available: {list_ops()}")
         raise typer.Exit(2)
@@ -172,7 +195,11 @@ def rollback(
 
     # Map db's op_class field back to a registered op name. Ops use snake_case
     # in events.op_class but are registered with kebab-case in the op registry.
-    name_map = {"add_file": "add-file", "delete_file": "delete-file"}
+    name_map = {
+        "add_file": "add-file",
+        "delete_file": "delete-file",
+        "add_ci_workflow": "add-ci-workflow",
+    }
     op_cls = get_op_class(name_map.get(op_class, op_class))
 
     if not op_cls.supports_rollback:
