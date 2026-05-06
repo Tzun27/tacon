@@ -32,6 +32,7 @@ from tacon.ops import ConfirmCallback, Op, RepoDiff, get_op_class, list_ops
 from tacon.ops.add_ci_workflow import AddCIWorkflow, WorkflowValidationError
 from tacon.ops.add_file import AddFile
 from tacon.ops.delete_file import DeleteFile
+from tacon.ops.fix_ci_workflow import FixCIWorkflow, make_bump_action_transform
 
 app = typer.Typer(
     name="tacon",
@@ -113,7 +114,20 @@ def run(
     ] = None,
     workflow_name: Annotated[
         str | None,
-        typer.Option("--workflow-name", help="(add-ci-workflow) Workflow filename stem."),
+        typer.Option(
+            "--workflow-name",
+            help="(add-ci-workflow/fix-ci-workflow) Workflow filename stem.",
+        ),
+    ] = None,
+    bump_action: Annotated[
+        str | None,
+        typer.Option(
+            "--bump-action",
+            help=(
+                "(fix-ci-workflow) Replace one action ref with another. "
+                "Format: <from>=<to>, e.g. actions/checkout@v3=actions/checkout@v4."
+            ),
+        ),
     ] = None,
     message: Annotated[
         str, typer.Option("--message", "-m", help="Commit message.")
@@ -159,6 +173,34 @@ def run(
         except WorkflowValidationError as exc:
             err_console.print(f"add-ci-workflow: invalid workflow: {exc}")
             raise typer.Exit(2) from exc
+    elif op_name == "fix-ci-workflow":
+        if not workflow_name or not bump_action:
+            err_console.print(
+                "fix-ci-workflow requires --workflow-name and --bump-action <from>=<to>"
+            )
+            raise typer.Exit(2)
+        if "=" not in bump_action:
+            err_console.print("--bump-action must be <from>=<to>")
+            raise typer.Exit(2)
+        from_ref, to_ref = bump_action.split("=", 1)
+        try:
+            transform = make_bump_action_transform(from_ref, to_ref)
+        except ValueError as exc:
+            err_console.print(f"fix-ci-workflow: {exc}")
+            raise typer.Exit(2) from exc
+        try:
+            op = FixCIWorkflow(
+                name=workflow_name,
+                transform=transform,
+                transform_id=f"bump-action {from_ref}->{to_ref}",
+                message=(
+                    message if message != "tacon: add file" else "tacon: fix CI workflow"
+                ),
+                assignment_id=assignment_id,
+            )
+        except WorkflowValidationError as exc:
+            err_console.print(f"fix-ci-workflow: {exc}")
+            raise typer.Exit(2) from exc
     else:
         err_console.print(f"Unknown op: {op_name}. Available: {list_ops()}")
         raise typer.Exit(2)
@@ -199,6 +241,7 @@ def rollback(
         "add_file": "add-file",
         "delete_file": "delete-file",
         "add_ci_workflow": "add-ci-workflow",
+        "fix_ci_workflow": "fix-ci-workflow",
     }
     op_cls = get_op_class(name_map.get(op_class, op_class))
 
