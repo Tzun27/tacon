@@ -76,9 +76,10 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# v0.0.1 foundation: 70% gate. Raise to 80% once CLI orchestration paths
-# (run/rollback/resume) get integration coverage; raise to 95% by v1.0.
-addopts = "-ra --strict-markers --cov=tacon --cov-report=term-missing --cov-fail-under=70"
+# v0.1: 90% gate (we sit at ~95%). v1.0 target: 95%.
+# History: started at 70% for the v0.0.1 foundation, bumped to 90% once CLI
+# orchestration + github_client edge paths got integration coverage.
+addopts = "-ra --strict-markers --cov=tacon --cov-report=term-missing --cov-fail-under=90"
 
 [tool.coverage.run]
 source = ["tacon"]
