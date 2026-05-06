@@ -1,6 +1,9 @@
-# Next session — pick up tacon v0.0.1 → v0.1
+# Next session — pick up tacon at v0.1.0
 
-You (the next agent) are continuing work on **tacon**, a TA workbench for GitHub Classroom. The v0.0.1 foundation is fully built, all gates green, but **nothing has been committed to git yet** and several v0.1 items remain.
+You (the next agent) are continuing work on **tacon**, a TA workbench for
+GitHub Classroom. The v0.1.0 surface is fully built, all gates green,
+all 14 commits in this branch are pushed to `origin/main` at
+`github.com/Tzun27/tacon`.
 
 This file is your handoff. Read it top-to-bottom before doing anything else.
 
@@ -9,155 +12,355 @@ This file is your handoff. Read it top-to-bottom before doing anything else.
 ## 0 · Orient yourself (5 min)
 
 ```bash
-cd /home/tzun/repos/gstack-test/tacon
-git -C .. status --short          # see what's untracked
-.venv/bin/pytest -q                # confirm 61 passing
-.venv/bin/ruff check . && .venv/bin/mypy tacon   # confirm gates still green
+cd /home/tzun/repos/tacon/tacon
+git status --short                # should be clean (or just .gitignored .env / .venv)
+git log --oneline | head -5       # confirm 527c3d6 is the tip
+.venv/bin/pytest -q --no-cov      # 198 tests pass (189 unit + 9 live, ~70s)
+.venv/bin/ruff check . && .venv/bin/mypy tacon   # both clean
 ```
 
-Expected after that:
-- Parent repo `/home/tzun/repos/gstack-test/` shows `?? tacon/`, `?? TODOS.md`, ` M .gitignore` plus all the `?? .claude/skills/...` from the gstack install.
-- 61 tests pass.
-- Coverage 74% (gate is 70%).
-- ruff + mypy clean.
+Expected:
+- `527c3d6 fix(tacon): use Auth.Token …` is the tip of `main`.
+- 189 unit tests pass in ~12s; 9 live tests pass in ~60s **if the user's
+  `.env` has `TACON_LIVE=1`** (it does as of writing). Live tests hit the
+  real GitHub API.
+- Coverage 95% (gate 90%). ruff + mypy clean across 19 files.
 
-If any of that fails, **stop and investigate before continuing** — something has drifted since the last session.
+If any of that fails, **stop and investigate before continuing** — something
+has drifted since this handoff was written.
+
+> **HEADS-UP about the live tests.** The user's `.env` is configured to run
+> live tests on every full `pytest` invocation. Each run does a real
+> apply+rollback on `Netdb-NCKU/pre-test-hw-Tzun27`, leaving two commits
+> in that repo's history (an apply commit and a revert commit) that **do
+> not** get garbage-collected. The file tree is left clean. If the user
+> doesn't want this, flip `TACON_LIVE=0` in `.env` (gitignored — safe to
+> tell them how to edit it but **never read or echo its contents** since
+> it has the token).
 
 ---
 
-## 1 · What exists (don't rebuild)
+## 1 · What exists at v0.1.0 (don't rebuild)
 
-### Code
-- `tacon/__init__.py` — `__version__ = "0.0.1"`
-- `tacon/db.py` — SQLite schema (5 tables: assignments, students, repos, events, interactions + meta) and accessors. Uses `_t(db, name)` helper to cast `Table | View → Table`. **Uses `.insert(..., pk=..., replace=True)` instead of `.upsert(...)` — see memory `feedback_sqlite_utils_upsert.md` for why.**
-- `tacon/ops/__init__.py` — `Op` ABC + 6 dataclasses (`RepoDiff`, `Diff`, `RepoApplyResult`, `ApplyResult`, `RepoRollbackResult`, `RollbackResult`), `ConfirmCallback` type, registry (`register`/`get_op_class`/`list_ops`).
-- `tacon/ops/add_file.py` — first concrete op. Plan/apply/rollback with blob-SHA equality check.
-- `tacon/github_client.py` — `RateLimitedClient` (default 3 req/sec, exponential backoff), `classify_error()` returns 8 enum strings, `get_default_token()` reads env vars + falls back to `gh auth token`.
-- `tacon/classroom.py` — `discover_via_gh_classroom()` (shells out to `gh classroom`), `discover_via_csv()` (fallback), `persist_discovered()`.
-- `tacon/cli.py` — Typer app with commands: `sync`, `run`, `rollback`, `resume`, `version`. **Stubs (exit 2 with "not implemented"):** `ui`, `dashboard`.
+### Code (tacon/)
 
-### Tests (61 passing)
-- `tests/conftest.py` — fixtures: `tmp_db`, `seed_repos` (alice/bob/carol), `fake_repo` (MagicMock), `fake_gh` (passthrough MagicMock).
-- `tests/test_db.py` — 13 tests: schema, upserts, archive, lowercase student_id, events.
-- `tests/test_github_client.py` — `classify_error` matrix + RateLimitedClient throttle/retry.
-- `tests/test_classroom.py` — CSV parse + gh shell-out (mocked) + persistence.
-- `tests/ops/test_add_file.py` — 12 tests: plan/apply/rollback branches with mocked PyGithub. **The most important one is `test_rollback_skipped_dirty_when_blob_changed`** — it proves we never overwrite student work.
-- `tests/test_cli.py` — 7 Typer CliRunner smoke tests.
+```
+tacon/
+├── __init__.py                       __version__ = "0.1.0"
+├── cli.py                            Typer app: sync, run, rollback, resume,
+│                                     ui, dashboard, version
+├── classroom.py                      gh classroom + CSV roster discovery
+├── db.py                             SQLite: assignments, students, repos,
+│                                     events, interactions, meta (schema v1)
+├── github_client.py                  RateLimitedClient (Auth.Token) + 8-class
+│                                     classify_error() + retry-after parsing
+├── ops/
+│   ├── __init__.py                   Op ABC + 6 dataclasses + lazy
+│   │                                 pkgutil-based registry auto-discovery
+│   ├── add_file.py                   AddFile (subclass-friendly: op_class_name
+│   │                                 + default_revert_message class attrs)
+│   ├── delete_file.py                DeleteFile (rollback restores from
+│   │                                 git blob via repo.get_git_blob)
+│   ├── add_ci_workflow.py            AddCIWorkflow (subclasses AddFile;
+│   │                                 YAML validation + workflow-aware diff)
+│   ├── fix_ci_workflow.py            FixCIWorkflow (transform-based patching;
+│   │                                 rollback via apply commit's parent;
+│   │                                 ships make_bump_action_transform)
+│   └── add_branch_protection.py      Read-only survey (supports_rollback=False;
+│                                     writes status='reported' events)
+├── dashboard/
+│   ├── __init__.py                   re-exports render
+│   ├── render.py                     Jinja2 → static HTML; reads events +
+│   │                                 repos + students; builds repos×ops grid
+│   └── templates/
+│       ├── base.html, index.html, op.html, repo.html
+└── tui/
+    ├── __init__.py                   re-exports TaconApp
+    └── app.py                        Textual: ops pane + events pane;
+                                      keybindings q/r/esc; last_status attr
+                                      for tests
+```
+
+Five ops registered: `add-file`, `delete-file`, `add-ci-workflow`,
+`fix-ci-workflow`, `add-branch-protection`. Auto-discovered on first
+`list_ops()` / `get_op_class()` call — drop a new file in `tacon/ops/` and
+it appears automatically (must call `register("name", Cls)` at the bottom).
+
+### Tests (tests/, 198 passing)
+
+- `tests/conftest.py` — `tmp_db`, `seed_repos`, `fake_repo`, `fake_gh`
+- `tests/test_db.py` — 13 schema/upsert/event tests
+- `tests/test_github_client.py` — 43 tests: classify_error matrix, retry
+  loops, Retry-After/X-RateLimit-Reset parsing, token resolution paths
+- `tests/test_classroom.py` — 11 CSV + gh shell-out tests
+- `tests/test_cli.py` — 32 integration tests (mock RateLimitedClient at
+  the `tacon.cli` boundary; cover every op, rollback, resume, _make_confirm
+  state machine)
+- `tests/test_dashboard.py` — 12 render + grid + CLI tests
+- `tests/test_tui.py` — 6 Textual Pilot tests (`run_test()` + `pilot.press()`)
+- `tests/ops/test_*.py` — 60 unit tests across the 5 ops + auto-discovery
+- `tests/live/` — opt-in live e2e (see §3 below)
+
+### CLI surface
+
+```
+tacon sync <classroom-id>
+tacon sync --from-csv repos.csv
+tacon run add-file --path X --content-from F [--apply --yes]
+tacon run delete-file --path X [--apply --yes]
+tacon run add-ci-workflow --workflow-name ci --content-from ci.yml [--apply --yes]
+tacon run fix-ci-workflow --workflow-name ci \
+    --bump-action actions/checkout@v3=actions/checkout@v4 [--apply --yes]
+tacon run add-branch-protection [--branch main] [--apply --yes]
+tacon rollback <op-id>
+tacon resume <op-id>          # PARTIAL — see §4 tech debt
+tacon ui                      # Textual TUI
+tacon dashboard --out ./site  # static HTML
+tacon dashboard --publish ... # NOT YET WIRED — exit 2
+tacon version
+```
 
 ### Tooling
-- `pyproject.toml` — hatch build, deps (PyGithub, typer, rich, sqlite-utils, jinja2), dev extras (pytest, pytest-cov, responses, ruff, mypy), `tui` extras (textual). Coverage gate is **70%** for v0.0.1 with a TODO to raise it to 80% by v0.1 and 95% by v1.0.
-- `.github/workflows/ci.yml` — matrix on Python 3.10/3.11/3.12 (ruff + mypy + pytest).
-- `.venv/` — Python 3.13.5 virtualenv with everything installed (`pip install -e ".[dev]"`).
-- `README.md`, `LICENSE` (MIT), `.gitignore`.
 
-### Design artifacts (read-only references)
-- **Approved design doc** (9/10 spec review): `/home/tzun/.gstack/projects/gstack-test/tzun-main-design-20260505-155527.md` — has every D1–D17 decision with rationale. Read this before making architectural decisions.
-- Eng-review test plan: `/home/tzun/.gstack/projects/gstack-test/tzun-main-eng-review-test-plan-20260505-164835.md`.
-- Memory: `/home/tzun/.claude/projects/-home-tzun-repos-gstack-test/memory/MEMORY.md` (currently one entry: the sqlite-utils 3.39 upsert quirk).
-
----
-
-## 2 · The first thing to do: commit the foundation
-
-**Nothing in `tacon/` is in git yet.** Before doing any new work, get this checkpointed.
-
-Recommended order:
-1. **Ask the user what scope they want committed.** The parent repo has unrelated untracked changes (the whole `.claude/skills/*` tree from the gstack install, plus a modified `.gitignore` and a `TODOS.md`). Don't sweep those into a tacon commit.
-2. Stage only the tacon subtree:
-   ```bash
-   git -C /home/tzun/repos/gstack-test add tacon/
-   ```
-3. Optionally add `TODOS.md` if it points to the design doc.
-4. Commit with a message like `feat: scaffold tacon v0.0.1 foundation` — body should mention 5-table schema, Op ABC, AddFile, RateLimitedClient, classroom sync, Typer CLI, 61 tests, 74% coverage.
-5. **Do not push** unless the user asks. There's no remote configured for tacon yet.
-
-**Recommended skill:** `/ship` — handles the commit + push flow with safety rails. Just be aware it'll want to push to a remote; for tacon there isn't one yet, so you may want to commit-only first and let the user decide on the remote (PyPI publish + GitHub repo creation are both still TODO per the design doc).
+- `pyproject.toml` — name `tacon`, version `0.1.0`. Deps: PyGithub≥2.1,
+  typer≥0.12, rich≥13.7, sqlite-utils≥3.36, jinja2≥3.1, PyYAML≥6.0.
+  Dev extras add textual, pytest-asyncio, types-PyYAML.
+  Coverage gate `--cov-fail-under=90`. `asyncio_mode = "auto"`.
+- `.github/workflows/ci.yml` — matrix on Python 3.10/3.11/3.12.
+- `.venv/` — Python 3.13.5; everything installed.
+- `.env` (gitignored) — live test config + GitHub token.
+- `.env.example` — documented template; uses
+  `Netdb-NCKU/pre-test-hw-Tzun27` as the worked example.
 
 ---
 
-## 3 · v0.1 roadmap (pick what the user wants)
+## 2 · What shipped THIS session (v0.0.1 → v0.1.0)
 
-In priority order based on the design doc:
+14 commits, summarized:
 
-### 3.1 — More ops (highest leverage)
-The Op ABC is built; adding new ops is now mostly a matter of writing one file + tests. Targets per the design doc:
-- **`AddCIWorkflow`** — write `.github/workflows/X.yml`. Same shape as AddFile but with workflow-aware diffing.
-- **`FixCIWorkflow`** — patch an existing workflow (e.g. bump action versions). Need a content-transform callback signature.
-- **`DeleteFile`** — inverse of AddFile. Rollback restores from blob.
-- **`AddBranchProtection`** — read-only at first (just report); write-mode requires admin token.
+| Commit prefix | What |
+|---|---|
+| `e509157` | DeleteFile op + 12 tests (blob-restore on rollback) |
+| `c9237be` | AddCIWorkflow op + 14 tests (YAML validation; refactored AddFile to use class attrs so subclasses plug in cleanly) |
+| `6699ac9` | FixCIWorkflow op + 18 tests (transform callback; rollback via apply commit's parent) |
+| `e1743fc` | AddBranchProtection op + 11 tests (read-only) |
+| `be9a877` | Auto-discovery: `pkgutil.iter_modules` + lazy `_ensure_discovered()` flag — no more import-side-effects |
+| `7f6e843` | CLI integration tests: cli.py 33% → 97% |
+| `dc44e35` | github_client edge tests: 65% → 99% |
+| `44da8b1` | Coverage gate 70 → 90 |
+| `05a9179` | Static dashboard (Jinja2 PackageLoader; index/op/repo pages + style.css) |
+| `fac7d08` | Textual TUI + bump to 0.1.0 |
+| `4e25f41` | README updated to reflect v0.1.0 |
+| `9c46c64` | Live e2e harness (opt-in, scope-guarded) |
+| `5901f1a` | .env.example uses concrete `Netdb-NCKU/pre-test-hw-Tzun27` example |
+| `527c3d6` | Auth.Token to silence PyGithub deprecation |
 
-Each op needs:
-- A new file in `tacon/ops/`
-- `register("name", Class)` at module bottom
-- An import in `tacon/cli.py` for side-effect registration (or a discovery loop — see "tech debt" §4 below)
-- A `tests/ops/test_<name>.py` mirroring `test_add_file.py`'s structure (use `fake_gh` + `fake_repo` fixtures)
-
-### 3.2 — Raise coverage to 80%
-Current gaps:
-- `tacon/cli.py` 35% — almost all uncovered lines are inside `run`, `rollback`, `resume` orchestration. Need integration-style CliRunner tests that mock `RateLimitedClient` at the boundary. The existing `test_cli.py` only does smoke tests.
-- `tacon/github_client.py` 65% — uncovered: `get_default_token()` fallback to `gh auth token`, retry-after header parsing, the inner backoff branches.
-- `tacon/ops/add_file.py` 92% — small remaining gap around lines 92–95, 261–262, 271–288 (look at the coverage report for specifics).
-
-Once at 80%, bump `--cov-fail-under=70` → `80` in `pyproject.toml`.
-
-### 3.3 — TUI (the "ui" stub)
-Per the design doc, this is a Textual app showing per-repo plan/apply status. The `textual` dep is already declared under the `[tui]` extra in `pyproject.toml`. Start point: replace the `ui` command stub in `cli.py` with a Textual `App` subclass. Use `Pilot` for tests (test stack already includes it).
-
-### 3.4 — Dashboard renderer (the "dashboard" stub)
-Per design D16, the dashboard renders to static HTML and supports `--publish` to gh-pages. Use Jinja2 (already a dep) over the SQLite events table. Templates in `tacon/dashboard/templates/`.
-
-### 3.5 — End-to-end test against live GitHub
-All current tests mock PyGithub. Per the test plan artifact, we need at least one e2e test that hits the real GitHub API against a throwaway test classroom. Use `responses` (already a dep) for VCR-style replay, or a `--live` pytest marker for opt-in real calls.
+Coverage today: **95%** across 19 source files. cli.py at 96%, dashboard at
+100%, tui at 99%, all 5 ops at 90+%. Project total LOC ~3.5K source + ~3.7K
+test.
 
 ---
 
-## 4 · Known tech debt / gotchas
+## 3 · Live e2e tests (the safety story)
 
-1. **sqlite-utils 3.39 upsert quirk** — already documented in memory and inline in `db.py`. If you see a write that "succeeds" but the row isn't there, suspect this first.
-2. **Op registration is import-side-effect** — `cli.py` does `from tacon.ops.add_file import AddFile` to trigger `register()`. As ops multiply, switch to an entry-points discovery pattern or an explicit registry list.
-3. **`resume` command is half-wired** — it identifies failed events but doesn't reconstruct the op. The current behavior prints a manual workaround. Real fix needs op_args_json deserialization (the column exists in the events table; nothing writes to it in v0.0.1 yet).
-4. **`gh classroom` extension may not be installed** on the user's system. The `discover_via_gh_classroom` path raises `GhClassroomError` with a clear message when `which gh` returns None. CSV fallback is the supported workflow until the user installs it.
-5. **No PyPI publish yet.** The name `tacon` is reserved (verified 404 on pypi.org/project/tacon). When publishing, bump version, build with `hatch build`, and the user will run `twine upload`.
-6. **No GitHub remote.** The tacon code lives in a subdirectory of the gstack-test sandbox repo. v0.1 may want its own repo at `github.com/<user>/tacon`. Discuss before creating.
-7. **Python 3.13 in the venv but CI matrix is 3.10/3.11/3.12.** Both work; just be aware. If you add 3.13-only syntax it'll break CI.
+Read this before touching anything that talks to real GitHub.
+
+**Configuration is in `tacon/.env`** (gitignored). It currently contains:
+- `TACON_GITHUB_TOKEN` — user's GitHub PAT (scoped to repo + their org)
+- `TACON_TEST_ORG=Netdb-NCKU`
+- `TACON_TEST_ASSIGNMENT_PREFIX=pre-test-hw`
+- `TACON_TEST_REPO=Netdb-NCKU/pre-test-hw-Tzun27` (pinned to user's own repo)
+- `TACON_LIVE=1` (live tests enabled — see warning above)
+
+**Hard scope guard:** `tests/live/conftest.py::assert_in_scope(repo_full_name)`
+raises `OutOfScopeError` (and aborts the test) if the repo isn't in
+`TACON_TEST_ORG` or doesn't carry `TACON_TEST_ASSIGNMENT_PREFIX` in its
+name. Every live test calls this before any API interaction. The
+discovery fixtures double-check by also calling it on every result.
+
+**The aiase2026 umbrella has multiple classrooms.** The user explicitly
+asked us to never operate outside `pre-test-hw`. The scope guard enforces
+this. **Do not loosen it.** If a future test needs broader scope, talk to
+the user first.
+
+**Live tests:**
+- `test_live_read.py` (7 tests, read-only) — token auth, org visibility,
+  repo discovery, single-repo metadata read, three scope-guard self-tests
+- `test_live_apply_rollback.py` (2 tests, write+rollback) — full
+  AddFile.plan → apply → verify → rollback → verify-clean cycle on a
+  unique tacon-marked path (`.tacon-live-test/<random>.txt`); plus a
+  blocked-when-present test against a real README. `try`/`finally`
+  cleanup deletes any leftover even if mid-flight crashes.
+
+To run only live tests: `.venv/bin/pytest tests/live/ -v --no-cov`.
+To skip live during a quick run: prepend `TACON_LIVE=0`.
 
 ---
 
-## 5 · How to use gstack skills here
+## 4 · v0.2 candidates (pick what the user wants)
 
-The user has gstack installed and `CLAUDE.md` has skill routing. Recommended skills for this work:
+In rough priority order based on what's actually missing or partial:
+
+### 4.1 — Finish `tacon resume` properly (HIGH)
+Today's behavior: prints failed-repo list + a manual workaround hint. The
+op_args_json column already stores the args; what's missing is content
+re-storage for AddFile (we deliberately hash it in args, not store
+bytes). Two paths:
+- **(a)** Require `--content-from` on resume too; replay only failed
+  repos by skipping already-applied ones. Lowest-friction.
+- **(b)** Add a `tacon/blobs/` content-addressable store keyed by
+  blob SHA. resume hydrates from there.
+
+(a) is probably right for v0.2; (b) is overkill until a user asks.
+
+### 4.2 — `--via-pr` mode for write ops (HIGH)
+Right now every write goes direct-to-default-branch. Branch-protected
+classrooms see per-repo failures with `error_class='permission'`.
+Per the design doc, `--via-pr` would: create a branch in the student
+repo, push the change there, open a PR. Apply still records the event;
+rollback closes the PR (plus deletes the branch?). Big feature surface;
+best to spec with `/plan-eng-review` before coding.
+
+### 4.3 — AddBranchProtection write mode (MEDIUM)
+Today: read-only survey. Write mode needs:
+- Admin-scoped token (most TA tokens don't have it)
+- A way to express "desired protection" (a `BranchProtectionRule`
+  dataclass)
+- supports_rollback could be True (snapshot-and-restore the prior rule)
+  or False (admin actions usually shouldn't auto-revert)
+
+Probably False for safety; let the user re-run with the prior rule if
+they want.
+
+### 4.4 — Dashboard `--publish` to gh-pages (MEDIUM)
+Today: prints "not yet wired" and exits 2. A clean implementation:
+- Take `--publish <owner>/<repo>` (the dashboard target repo, NOT the
+  classroom)
+- Render to a tmp dir, then push to that repo's `gh-pages` branch via
+  PyGithub (or shell out to gh)
+- Idempotent: each run replaces the gh-pages tip
+
+### 4.5 — PyPI publish (MEDIUM)
+The name `tacon` was reserved at v0.0.1. The user runs `twine upload`,
+not us. To prep:
+- Verify build with `hatch build`
+- Confirm template files (`tacon/dashboard/templates/*.html`) actually
+  end up in the wheel — hatch defaults usually do this but verify with
+  `unzip -l dist/tacon-0.1.0-py3-none-any.whl | grep templates`
+- Check that `[project.scripts] tacon = "tacon.cli:app"` resolves after
+  install
+- Optionally add `[project.optional-dependencies] dashboard = [jinja2…]`
+  if we want to make jinja2 optional
+
+### 4.6 — Multi-classroom config (LOW)
+One DB per classroom is fine for now. v0.2.x can add a `classrooms`
+table + `--classroom <id>` flag if any user actually has more than one.
+
+### 4.7 — Live e2e: more ops (LOW)
+Today's live tests cover AddFile only. Add live tests for delete-file,
+add-ci-workflow, fix-ci-workflow, add-branch-protection. Each follows
+the same shape: scope guard → preflight → apply → verify → rollback →
+verify clean.
+
+### 4.8 — Schema v2 (LOW, for FixCIWorkflow rollback)
+Today FixCIWorkflow's rollback fetches the prior content from the apply
+commit's parent. That works but adds two API calls per repo to a
+rollback. A `previous_blob_sha` column on events would let rollback
+fetch the blob directly. Bump SCHEMA_VERSION 1 → 2 with an `add_column`
+migration in `init_db`. Only worth it if rollback latency is a real
+issue.
+
+---
+
+## 5 · Known tech debt / gotchas
+
+1. **Live tests fire on every pytest run** while `TACON_LIVE=1` is set
+   in `.env`. Each run leaves an apply+revert pair of commits in the
+   test repo's history. Working tree stays clean.
+
+2. **`tacon resume` is partial.** It identifies failed events and prints
+   a workaround hint. See §4.1.
+
+3. **`gh classroom` extension** may not be installed on every dev
+   machine. `discover_via_gh_classroom` raises a clear error pointing to
+   `--from-csv`. CSV fallback is the supported workflow until installed.
+
+4. **sqlite-utils 3.39 upsert quirk** — silently no-ops when the table
+   has `not_null=...` constraints. We use `.insert(..., pk=..., replace=True)`
+   instead. Documented inline in `db.py`. If a write "succeeds" but the
+   row isn't there, suspect this first.
+
+5. **`--publish` is stub-only.** §4.4.
+
+6. **Dashboard `op_id_label` printer arg** is unused-looking but is
+   needed because `_print_apply_result` is called twice (once with label,
+   once without — actually only once with label currently; could be
+   simplified, low priority).
+
+7. **AddCIWorkflow imports `_NAME_RE` from `add_ci_workflow`** in
+   `fix_ci_workflow`. Sibling-module private import; tolerable but
+   could move to a shared `tacon/ops/_validation.py` if a third op
+   needs the same regex.
+
+8. **PyGithub 2.x deprecation** addressed in `527c3d6`. Token now goes
+   through `Auth.Token`. If we depend on more PyGithub APIs that get
+   deprecated, watch for similar warnings during live test runs.
+
+9. **Python 3.13 in the venv but CI tests 3.10/3.11/3.12.** All work; if
+   you add 3.13-only syntax (`type` statement, etc.) it'll break CI.
+
+---
+
+## 6 · How to use gstack skills here
+
+The user has gstack installed. Project `CLAUDE.md` has skill routing.
 
 | Situation | Skill | Why |
 |---|---|---|
-| Resuming context (today's first message) | `/context-restore` | Loads prior plan + notes if the user used `/context-save` last time. |
-| Planning v0.1 scope | `/plan-eng-review` | Pressure-test which ops to ship first; surfaces scope/test/perf risks. |
-| Brainstorming op surface area | `/office-hours` | Lower-friction than plan-eng-review for "which 3 ops are worth doing first?" |
-| Before committing | `/review` | Catches bugs and inconsistencies in the diff before it lands. |
-| Committing + (later) PRing | `/ship` | Safe commit + push flow. Combines well with `/land-and-deploy` once there's a remote. |
-| Hunting a bug | `/investigate` | Root-cause first, fix second. |
-| Verifying a feature works | `/qa` | End-to-end behavioral check. |
-| Saving progress at end of session | `/context-save` | Pairs with `/context-restore` next time. |
+| Resuming context (today's first message) | `/context-restore` | Loads prior plan + notes |
+| Planning v0.2 scope | `/plan-eng-review` | Pressure-test architecture before coding |
+| Brainstorming op surface | `/office-hours` | Lower-friction than plan-eng-review |
+| Before committing | `/review` | Catches bugs/inconsistencies in the diff |
+| Committing + PRing | `/ship` | Safe commit + push flow |
+| Hunting a bug | `/investigate` | Root-cause first, fix second |
+| Verifying behavior | `/qa` | End-to-end behavioral check |
+| Saving progress at end of session | `/context-save` | Pairs with `/context-restore` |
 
-**Heuristic:** if you're about to add a substantial new module (e.g. starting the TUI), invoke `/plan-eng-review` first. If you're polishing or debugging, skip the ceremony.
-
----
-
-## 6 · Environment recap
-
-- **Working dir:** `/home/tzun/repos/gstack-test/tacon/`
-- **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` — activate with `source .venv/bin/activate` or just call `.venv/bin/<tool>` directly.
-- **Default DB path:** `~/.tacon/tacon.db` (overrideable via `--db` or `TACON_HOME` env var).
-- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-gstack-test/memory/`
-- **gstack home:** `~/.gstack/` — design docs live under `~/.gstack/projects/gstack-test/`.
-- **Python in venv:** 3.13.5 (CI tests against 3.10/3.11/3.12).
-- **Today's date when this was written:** 2026-05-05.
+**Heuristic:** if you're about to add a substantial new module
+(e.g. starting `--via-pr`), invoke `/plan-eng-review` first. If you're
+polishing or debugging, skip the ceremony.
 
 ---
 
-## 7 · TL;DR for the impatient
+## 7 · Environment recap
 
-1. Run `pytest`, `ruff`, `mypy` to confirm nothing broke since the handoff.
-2. Ask the user: **commit the foundation now, or push v0.1 work first?**
-3. If they want new work, ask **which v0.1 item from §3** — most likely "another op."
-4. Use `/plan-eng-review` for non-trivial new modules; otherwise just code.
-5. Keep coverage gate satisfied; raise it to 80% once `cli.py` has integration tests.
+- **Working dir:** `/home/tzun/repos/tacon/tacon/`
+- **Git root:** `/home/tzun/repos/tacon/` (the `tacon/` subdir is the
+  Python package + tests)
+- **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the only
+  branch; pushed.
+- **venv:** `/home/tzun/repos/tacon/tacon/.venv/` (Python 3.13.5).
+  Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
+  directly.
+- **Default DB path:** `~/.tacon/tacon.db` (overrideable via `--db` or
+  `TACON_HOME`). Live tests use a per-test `tmp_path` DB; they never
+  touch the user's real DB.
+- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-tacon/memory/`
+- **`.env`:** at `tacon/.env` (gitignored). Contains the user's GitHub
+  PAT plus live-test scope config. **Never read or echo its contents.**
+
+---
+
+## 8 · TL;DR for the impatient
+
+1. Run `pytest -q --no-cov`, `ruff check .`, `mypy tacon` to confirm
+   nothing broke since the handoff. Expect 198 / clean / clean.
+2. Ask the user **which v0.2 item from §4** they want next. Most likely:
+   - "finish resume" → §4.1
+   - "make ops work on protected branches" → §4.2 (`--via-pr`)
+   - "publish to PyPI" → §4.5
+3. Use `/plan-eng-review` for non-trivial new modules; otherwise just
+   code.
+4. Periodic commits — small, scoped, with clear `feat/fix/test/docs`
+   prefixes. The git log so far is the model.
+5. `/context-save` at the end of your session and update this file.
