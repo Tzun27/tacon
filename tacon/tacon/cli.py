@@ -29,6 +29,7 @@ from tacon.db import (
 )
 from tacon.github_client import RateLimitedClient
 from tacon.ops import ConfirmCallback, Op, RepoDiff, get_op_class, list_ops
+from tacon.ops.add_branch_protection import AddBranchProtection
 from tacon.ops.add_ci_workflow import AddCIWorkflow, WorkflowValidationError
 from tacon.ops.add_file import AddFile
 from tacon.ops.delete_file import DeleteFile
@@ -129,6 +130,13 @@ def run(
             ),
         ),
     ] = None,
+    branch: Annotated[
+        str | None,
+        typer.Option(
+            "--branch",
+            help="(add-branch-protection) Branch to inspect. Defaults to each repo's default.",
+        ),
+    ] = None,
     message: Annotated[
         str, typer.Option("--message", "-m", help="Commit message.")
     ] = "tacon: add file",
@@ -173,6 +181,8 @@ def run(
         except WorkflowValidationError as exc:
             err_console.print(f"add-ci-workflow: invalid workflow: {exc}")
             raise typer.Exit(2) from exc
+    elif op_name == "add-branch-protection":
+        op = AddBranchProtection(branch=branch, assignment_id=assignment_id)
     elif op_name == "fix-ci-workflow":
         if not workflow_name or not bump_action:
             err_console.print(
@@ -242,6 +252,7 @@ def rollback(
         "delete_file": "delete-file",
         "add_ci_workflow": "add-ci-workflow",
         "fix_ci_workflow": "fix-ci-workflow",
+        "add_branch_protection": "add-branch-protection",
     }
     op_cls = get_op_class(name_map.get(op_class, op_class))
 
