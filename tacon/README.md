@@ -4,8 +4,8 @@ A TA workbench for GitHub Classroom: batch operations across student
 repos with diff preview, per-repo confirm, rollback, and a static
 class-health dashboard your professor can bookmark.
 
-> Status: pre-alpha (0.0.x). Foundation modules + `add_file` Op only.
-> Textual TUI and static dashboard land in 0.1.x.
+> Status: alpha (0.1.x). Five ops, Textual TUI, static dashboard. Live
+> end-to-end test against the GitHub API still TODO.
 
 ## Why
 
@@ -51,7 +51,28 @@ tacon rollback <op-id>
 
 # 5. Or retry just the repos that failed
 tacon resume <op-id>
+
+# 6. Browse the audit trail (TUI)
+tacon ui
+
+# 7. Render a shareable static HTML dashboard
+tacon dashboard --out ./tacon-site
+# open ./tacon-site/index.html
 ```
+
+## Available ops
+
+| Op                       | Description                                    |
+|--------------------------|------------------------------------------------|
+| `add-file`               | Push a single file to N repos                  |
+| `delete-file`            | Remove a file from N repos                     |
+| `add-ci-workflow`        | Push a `.github/workflows/<name>.yml`          |
+| `fix-ci-workflow`        | Patch an existing workflow (e.g. bump action) |
+| `add-branch-protection`  | Read-only survey of branch protection state   |
+
+Every op supports plan/apply/rollback (where rollback is meaningful) with
+the same blob-SHA-based safety: tacon refuses to overwrite work it didn't
+write itself.
 
 ## How it works
 
@@ -62,23 +83,30 @@ tacon resume <op-id>
 - Rollback compares blob SHAs (not commit lineage) — tacon will never
   silently delete student work.
 
-## Scope (v0.0.x foundation)
+## Scope (v0.1.0)
 
 - ✅ `tacon sync` (gh classroom + CSV fallback)
-- ✅ `tacon run add-file` (API-only, direct push to default branch)
+- ✅ `tacon run` for five ops (`add-file`, `delete-file`,
+  `add-ci-workflow`, `fix-ci-workflow`, `add-branch-protection`)
 - ✅ `tacon rollback` (blob-SHA-safe)
-- ✅ `tacon resume` (retry only failed events)
-- 🚧 `tacon ui` (Textual TUI — coming in 0.1.x)
-- 🚧 `tacon dashboard --out` (static HTML — coming in 0.1.x)
+- ✅ `tacon resume` (retry only failed events; partial — see Limitations)
+- ✅ `tacon ui` (Textual TUI: ops on left, events on right)
+- ✅ `tacon dashboard --out` (static HTML)
 - 🚧 `tacon dashboard --publish` (push to gh-pages — coming in 0.1.x)
 
-## Limitations (v0.0.x)
+## Limitations (v0.1.0)
 
 - Direct push to default branch only. Branch-protected classrooms will
   see per-repo failures with `error_class='permission'`. PR-based mode
-  (`--via-pr`) lands in 0.1.x or 0.2.x.
-- One classroom per DB. Multi-class config in 0.1.x.
-- `add_file` is the only Op. `open_issue`, `protect_branch` come later.
+  (`--via-pr`) lands in 0.2.x.
+- One classroom per DB. Multi-class config in 0.2.x.
+- `tacon resume` for `add-file` requires you to re-supply
+  `--content-from` (we don't store the raw bytes); it currently prints
+  the failed repo list and the manual workaround.
+- `add-branch-protection` is read-only. Write-mode requires admin token
+  and is planned for 0.2.x.
+- No live end-to-end test against api.github.com yet — all tests mock
+  PyGithub. Set up via `--live` pytest marker is on the roadmap.
 
 ## License
 
