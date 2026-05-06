@@ -15,3 +15,7 @@ venv/
 ~/.tacon/
 *.db
 *.db-journal
+
+# Local secrets — never commit
+.env
+.env.local
