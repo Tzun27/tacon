@@ -13,7 +13,7 @@ two parts you can't skip.
 
 ## -1 · What shipped after v0.1.0
 
-**Sixteen commits since the v0.1.0 handoff** (`7c181e5`):
+**Twenty-three commits since the v0.1.0 handoff** (`7c181e5`):
 
 | Commit | Item | What |
 |---|---|---|
@@ -33,9 +33,17 @@ two parts you can't skip.
 | `724039e` | §4.7 | **Live e2e: AddCIWorkflow direct + `--via-pr`** — two tests writing a unique tacon-marked workflow file under `.github/workflows/`. |
 | `10ed37e` | §4.7 | **Live e2e: FixCIWorkflow direct + `--via-pr`** — seeds workflow with `actions/checkout@v3`, bumps to v4 via `make_bump_action_transform`, verifies bump landed (or only on branch for via-pr), rolls back. |
 | `45731c0` | §4.7 | **Live e2e: AddBranchProtection survey** — read-only plan+apply against the test repo; verifies summary shape + event lands with status `reported`. |
+| `8de18a7` | docs | Handoff doc reflects §4.7 done + 18 live tests total. |
+| `44efd47` | §4.3 | **Plan for §4.3 AddBranchProtection write mode** at `plans/branch_protection_write.md`. Locked design (4/4 user-confirmed defaults): `--rule-from`/`--rule-template` only (no inline flags), supports_rollback=True via snapshot+restore, bundle tacon-default + strict-pr templates, live test pytest.skip on 403. |
+| `7d96f09` | §4.3 | **Schema v3** — added `events.prior_state_json TEXT`. Idempotent migration in `_migrate_to_v3` mirroring v2. `insert_event`/`update_event_status` grew the kwarg. 5 new schema tests. |
+| `54c6b0d` | §4.3 | **`BranchProtectionRule` dataclass + YAML loader** at `tacon/ops/_branch_protection_rule.py`. Frozen dataclass, strict validation (rejects unknown keys, wrong types, out-of-range counts), `to_edit_protection_kwargs()` maps to PyGithub's API. Empty `tacon/templates/protection/` package added; `_` prefix on the module excludes it from op auto-discovery. 27 new unit tests. |
+| `81df2b1` | §4.3 | **Bundled templates `tacon-default` + `strict-pr`** at `tacon/templates/protection/*.yaml`. Verified to ship inside the wheel via `python -m build`. 4 new tests. |
+| `06cae35` | §4.3 | **AddBranchProtection write mode** — op accepts optional `rule=BranchProtectionRule`. `plan()` renders a desired-state diff + idempotency block; `apply()` snapshots prior protection to `events.prior_state_json` then writes via `branch.edit_protection`; `rollback()` filters status='applied', drift-checks current vs applied, restores prior (or `remove_protection` if prior was null). `supports_rollback=True` at class level so the CLI passes through; survey op_ids yield empty rollback (clear "nothing to roll back" message). 15 new unit tests. |
+| `245fa0d` | §4.3 | **CLI `--rule-from`/`--rule-template` flags** + write-mode resume. Mutually exclusive flags switch from survey to write mode; both-given/missing-file/bad-YAML/unknown-template all exit 2. Resume rehydrates the rule from `op_args.rule`. 7 new CLI tests covering the matrix. |
 
-Four v0.2 items now shipped: §4.1 (resume), §4.2 (`--via-pr`), §4.5
-(PyPI prep), §4.7 (live e2e for the remaining ops). What's left is in §4 below.
+Five v0.2 items now shipped: §4.1 (resume), §4.2 (`--via-pr`), §4.3
+(AddBranchProtection write mode), §4.5 (PyPI prep), §4.7 (live e2e for
+the remaining ops). What's left is in §4 below.
 
 ---
 
@@ -44,18 +52,19 @@ Four v0.2 items now shipped: §4.1 (resume), §4.2 (`--via-pr`), §4.5
 ```bash
 cd /home/tzun/repos/tacon/tacon
 git status --short                   # clean (or just .gitignored .env / .venv / dist)
-git log --oneline | head -5          # confirm 45731c0 is the tip
-.venv/bin/pytest -q --no-cov         # 242 unit tests pass in ~17s
+git log --oneline | head -5          # confirm the §4.3 final commit is the tip
+.venv/bin/pytest -q --no-cov         # 300 unit tests pass in ~19s
 .venv/bin/ruff check . && .venv/bin/mypy tacon   # both clean
 ```
 
 Expected:
-- `45731c0 test(tacon): live e2e for AddBranchProtection read-only survey` is the tip of `main`.
-- 242 unit tests pass; **18 live tests** pass **if the user's `.env`
-  has `TACON_LIVE=1`** (10 from prior session + 8 new from §4.7). Live
-  tests hit the real GitHub API.
-- Coverage stays above 90% (gate). ruff + mypy clean across **16
-  source files**.
+- The §4.3 final commit (CLI wiring) is the tip of `main`.
+- 300 unit tests pass (was 242 in v0.1; +5 schema v3, +31 rule, +15
+  write-mode op, +7 CLI). **18 live unit tests + 1 live skip-on-403**
+  pass if `TACON_LIVE=1`. Live tests hit the real GitHub API.
+- Coverage stays above 90% (gate). ruff + mypy clean across **19
+  source files** (+1 _branch_protection_rule.py, +1 templates/__init__.py,
+  +1 templates/protection/__init__.py).
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -94,9 +103,11 @@ tacon/
 ├── classroom.py                      gh classroom + CSV roster discovery
 ├── db.py                             SQLite: assignments, students, repos,
 │                                     events, interactions, meta
-│                                     SCHEMA_VERSION = 2 (events.pr_number
-│                                     + pr_branch added; idempotent migration
-│                                     in `_migrate_to_v2`)
+│                                     SCHEMA_VERSION = 3
+│                                     v2 added events.pr_number/pr_branch
+│                                     v3 added events.prior_state_json
+│                                     (snapshot for AddBranchProtection rollback)
+│                                     Idempotent _migrate_to_v2 + _migrate_to_v3
 ├── github_client.py                  RateLimitedClient (Auth.Token) + 8-class
 │                                     classify_error() + retry-after parsing
 ├── ops/
@@ -124,9 +135,20 @@ tacon/
 │   │                                 Own apply path; _patch accepts branch=,
 │   │                                 _apply_via_pr orchestrates,
 │   │                                 _rollback_via_pr handles.
-│   └── add_branch_protection.py      Read-only survey
-│                                     (supports_rollback=False,
-│                                      supports_via_pr=False).
+│   ├── add_branch_protection.py      Survey + write modes
+│   │                                 (supports_rollback=True at class level,
+│   │                                  rollback() filters status='applied' so
+│   │                                  survey ops naturally yield empty;
+│   │                                  supports_via_pr=False — repo-level config).
+│   ├── _branch_protection_rule.py    BranchProtectionRule dataclass + YAML
+│   │                                 loader + bundled-template resolver.
+│   │                                 `_` prefix excludes from auto-discovery.
+│   └── (templates live at)           tacon/templates/protection/{tacon-default,
+│                                     strict-pr}.yaml
+├── templates/                         Bundled YAML rule templates
+│   └── protection/
+│       ├── tacon-default.yaml         1 review, dismiss-stale, no req. checks
+│       └── strict-pr.yaml             2 reviews, enforce admins, linear history
 ├── dashboard/
 │   ├── __init__.py                   re-exports render
 │   ├── render.py                     Jinja2 → static HTML
@@ -143,7 +165,7 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 **Modules starting with `_` are explicitly skipped** — that's why
 `_via_pr.py` is helpers, not an op.
 
-### Tests (tests/, 242 unit + 18 live)
+### Tests (tests/, 300 unit + 18 live + 1 skip-on-403 live)
 
 - `tests/conftest.py` — `tmp_db`, `seed_repos`, `fake_repo`, `fake_gh`
 - `tests/test_db.py` — 18 tests (5 new for schema v2: fresh-build cols,
@@ -155,14 +177,15 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
   via-pr ops, add-branch-protection --via-pr rejection added)
 - `tests/test_dashboard.py` — 12 tests
 - `tests/test_tui.py` — 6 Textual Pilot tests
-- `tests/ops/test_via_pr.py` — **18 helper unit tests (NEW)**
-- `tests/ops/test_add_file.py` — 20 tests (7 new for via-pr)
-- `tests/ops/test_delete_file.py` — 17 tests (5 new for via-pr)
-- `tests/ops/test_add_ci_workflow.py` — 16 tests (2 new for via-pr inheritance)
-- `tests/ops/test_fix_ci_workflow.py` — 23 tests (5 new for via-pr)
-- `tests/ops/test_add_branch_protection.py` — unchanged
+- `tests/ops/test_via_pr.py` — 18 helper unit tests (v0.2 §4.2)
+- `tests/ops/test_add_file.py` — 20 tests
+- `tests/ops/test_delete_file.py` — 17 tests
+- `tests/ops/test_add_ci_workflow.py` — 16 tests
+- `tests/ops/test_fix_ci_workflow.py` — 23 tests
+- `tests/ops/test_add_branch_protection.py` — **26 tests** (15 new for write mode + drift + describe)
+- `tests/ops/test_branch_protection_rule.py` — **31 tests (NEW)** (rule validation, YAML, bundled templates)
 - `tests/ops/test_registry_discovery.py` — unchanged
-- `tests/live/` — opt-in live e2e (18 tests):
+- `tests/live/` — opt-in live e2e (18 unit + 1 skip-on-403):
   - `test_live_read.py` (7 tests, read-only)
   - `test_live_apply_rollback.py` (2 tests, AddFile direct write+rollback)
   - `test_live_via_pr.py` (1 test, AddFile via-pr round-trip)
@@ -171,6 +194,8 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
   - `test_live_add_ci_workflow.py` (2 tests, AddCIWorkflow direct + via-pr)
   - `test_live_fix_ci_workflow.py` (2 tests, FixCIWorkflow direct + via-pr)
   - `test_live_add_branch_protection.py` (1 test, read-only survey)
+  - `test_live_branch_protection_write.py` (**1 test, NEW** — write+rollback;
+    skip-on-403 since most TA tokens lack admin scope)
 
 ### CLI surface (current)
 
@@ -185,7 +210,12 @@ tacon run fix-ci-workflow --workflow-name ci \
     --bump-action actions/checkout@v3=actions/checkout@v4 \
     [--via-pr] [--apply --yes]
 tacon run add-branch-protection [--branch main] [--apply --yes]
-                                # --via-pr is REJECTED here (read-only op)
+                                # default: read-only survey
+tacon run add-branch-protection --rule-from RULE.yaml [--apply --yes]
+                                # write mode: apply rule from file
+tacon run add-branch-protection --rule-template tacon-default [--apply --yes]
+                                # write mode: bundled (tacon-default | strict-pr)
+                                # --via-pr is REJECTED here (repo-level config)
 tacon rollback <op-id>          # auto-detects via-pr events from pr_number
 tacon resume <op-id> [--content-from FILE] [--yes]
                                 # auto-detects via-pr from op_args.via_pr
@@ -286,7 +316,7 @@ add the columns on next `open_db`.
 
 ## 4 · v0.2 candidates (what's still on the table)
 
-In rough priority order. Four items already shipped (marked DONE).
+In rough priority order. Five items already shipped (marked DONE).
 
 ### 4.1 — Finish `tacon resume` properly (HIGH) ✅ DONE in `bc247dc`
 
@@ -302,20 +332,24 @@ See §-1 for the commit sequence. The eng-reviewed plan is in
 `plans/via_pr.md`. Summary: 4 write ops + helpers + schema v2 +
 CLI + resume + README + 1 live test.
 
-### 4.3 — AddBranchProtection write mode (MEDIUM)
+### 4.3 — AddBranchProtection write mode (MEDIUM) ✅ DONE in 6 commits
 
-Today: read-only survey. Write mode needs:
-- Admin-scoped token (most TA tokens don't have it)
-- A way to express "desired protection" — likely a `BranchProtectionRule`
-  dataclass with the typical fields (required_pull_request_reviews,
-  required_approving_review_count, required_status_checks, etc.)
-- `supports_rollback` decision: True (snapshot-and-restore the prior
-  rule) or False (admin actions usually shouldn't auto-revert).
-  **Recommend False** for safety; let the user re-run with the prior
-  rule if they want.
+Plan locked in `plans/branch_protection_write.md`. Summary of what
+shipped: schema v3 (`prior_state_json` column), `BranchProtectionRule`
+dataclass + YAML loader at `tacon/ops/_branch_protection_rule.py`,
+bundled `tacon-default` + `strict-pr` templates, write-mode op
+(`AddBranchProtection(rule=...)`), CLI `--rule-from` / `--rule-template`
+flags, write-mode resume, live test (skip-on-403).
 
-Worth speccing with `/plan-eng-review` before coding — there's a real
-shape decision around the BranchProtectionRule dataclass.
+Future extensions beyond v0.2:
+- **Inline flag overrides** (`--required-approvals 2`) — not shipped.
+  If a TA wants this, `tacon/cli.py::run` is the hook; build a
+  `BranchProtectionRule` from the flag args before falling through to
+  the file/template logic.
+- **More bundled templates** (e.g. `status-checks-only`) — drop new
+  YAML in `tacon/templates/protection/`; auto-discovered.
+- **Org-level Repository Rule Sets** — separate API surface; would be
+  a new op (`add-org-ruleset`?), not a write-mode of this one.
 
 ### 4.4 — Dashboard `--publish` to gh-pages (MEDIUM)
 
@@ -453,23 +487,26 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 
 ## 7 · Environment recap
 
-- **Working dir:** `/home/tzun/repos/gstack-test/tacon/`
-- **Git root:** `/home/tzun/repos/gstack-test/` (the `tacon/` subdir
-  is the Python package + tests + pyproject + plans).
+- **Working dir:** `/home/tzun/repos/tacon/tacon/`
+- **Git root:** `/home/tzun/repos/tacon/` (the `tacon/` subdir is the
+  Python package + tests + pyproject + plans).
 - **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the
-  only branch; pushed through `16d168b` as of this handoff.
-- **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` (Python 3.13.5).
+  only branch; the most recent push from prior sessions was `16d168b`.
+  This session adds 14 commits on top (§4.7 + §4.3); whether they're
+  pushed depends on what you (the user) chose to do.
+- **venv:** `/home/tzun/repos/tacon/tacon/.venv/` (Python 3.13.5).
   Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
   directly. If pytest collection fails on `textual`, re-install dev
   extras: `.venv/bin/pip install -e ".[dev]"`.
 - **Default DB path:** `~/.tacon/tacon.db` (overridable via `--db` or
   `TACON_HOME`). Live tests use a per-test `tmp_path` DB; they never
   touch the user's real DB.
-- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-gstack-test/memory/`
+- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-tacon/memory/`
 - **`.env`:** at `tacon/.env` (gitignored). Contains the user's GitHub
   PAT plus live-test scope config. **Never read or echo its contents.**
 - **Plans dir:** `tacon/plans/` (tracked). Per-feature eng-review
-  artifacts. `via_pr.md` is the only one as of this handoff.
+  artifacts. Two now: `via_pr.md` (§4.2) and
+  `branch_protection_write.md` (§4.3).
 
 ---
 
@@ -479,10 +516,13 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
    nothing broke since the handoff. Expect **242 unit tests passing**
    (+18 live if `TACON_LIVE=1`), ruff clean, mypy clean across **16
    source files**.
-2. Ask the user **which v0.2 item from §4** they want next. Four
-   already shipped (4.1, 4.2, 4.5, 4.7). The remaining MEDIUM items
-   (§4.3 AddBranchProtection write mode, §4.4 dashboard `--publish`)
-   both want a `/plan-eng-review` pass before coding.
+2. Ask the user **which v0.2 item from §4** they want next. Five
+   already shipped (4.1, 4.2, 4.3, 4.5, 4.7). The remaining MEDIUM
+   item is §4.4 dashboard `--publish` — wants a `/plan-eng-review`
+   pass before coding (PyGithub vs `gh` shell-out, gh-pages branch
+   handling). The LOW items (§4.6/§4.8/§4.9) are all speculative per
+   the handoff and likely shouldn't be picked up unless someone
+   actually wants them.
 3. Use `/plan-eng-review` for non-trivial new modules; write the plan
    to `plans/<feature>.md`. Otherwise just code.
 4. Periodic commits — small, scoped, with clear `feat/fix/test/docs`

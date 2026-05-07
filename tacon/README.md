@@ -68,7 +68,7 @@ tacon dashboard --out ./tacon-site
 | `delete-file`            | Remove a file from N repos                     |
 | `add-ci-workflow`        | Push a `.github/workflows/<name>.yml`          |
 | `fix-ci-workflow`        | Patch an existing workflow (e.g. bump action) |
-| `add-branch-protection`  | Read-only survey of branch protection state   |
+| `add-branch-protection`  | Survey or **set** branch protection rules     |
 
 Every op supports plan/apply/rollback (where rollback is meaningful) with
 the same blob-SHA-based safety: tacon refuses to overwrite work it didn't
@@ -97,8 +97,8 @@ v0.2 (in progress):
 - ✅ `tacon resume` finishes its job: replays only the failed repos with
   fresh op_id; original failed events get an audit-trail annotation.
 - ✅ `tacon run --via-pr` (described below) for branch-protected classrooms.
+- ✅ AddBranchProtection write mode (described below) with snapshot+restore rollback.
 - 🚧 `tacon dashboard --publish` (push to gh-pages).
-- 🚧 AddBranchProtection write mode.
 
 ## `--via-pr` mode (branch-protected classrooms)
 
@@ -124,18 +124,61 @@ auto-detects via-pr events and closes the PR + deletes the branch.
 default would require the very write-permission `--via-pr` exists to
 avoid).
 
-`--via-pr` does not apply to `add-branch-protection` (read-only); the
-CLI rejects it with exit code 2.
+`--via-pr` does not apply to `add-branch-protection` because branch
+protection is repo-level config, not branch content; the CLI rejects
+it with exit code 2.
+
+## Branch protection write mode
+
+`add-branch-protection` runs as a read-only survey by default. Pass
+`--rule-from FILE.yaml` or `--rule-template <name>` to switch into write
+mode and apply the desired rule across every active repo:
+
+```bash
+# bundled template (recommended starting point)
+tacon run add-branch-protection --rule-template tacon-default --apply --yes
+
+# stricter preset: 2 reviews, dismiss stale, admins enforced, linear history
+tacon run add-branch-protection --rule-template strict-pr --apply --yes
+
+# custom rule from a YAML file
+tacon run add-branch-protection --rule-from ./my-rule.yaml --apply --yes
+```
+
+YAML wire format (everything is optional; defaults are minimal):
+
+```yaml
+required_approving_review_count: 1
+dismiss_stale_reviews: true
+require_code_owner_reviews: false
+required_status_checks: [ci, lint]   # null/omit = no requirement
+strict_status_checks: false
+enforce_admins: false
+allow_force_pushes: false
+allow_deletions: false
+required_linear_history: false
+```
+
+Write mode is idempotent (running with the rule already in place is a
+no-op) and rollback-safe: each apply records the prior protection state
+in `events.prior_state_json`, and `tacon rollback <op-id>` restores it
+(or removes protection entirely if the branch was unprotected before).
+The rollback drift-checks against the current state and refuses to
+clobber if someone else has changed protection since.
+
+**Admin scope required.** Most TA tokens lack admin scope on classroom
+repos; non-admin tokens get a per-repo `error_class='permission'`
+failure. Run with an admin token (org-level "manage repositories"
+permission) to use write mode.
 
 ## Limitations
 
 - One classroom per DB. Multi-class config is on the roadmap.
-- `add-branch-protection` is read-only. Write-mode requires an admin
-  token and is on the roadmap.
-- Live e2e tests cover AddFile (direct + via-pr); the other ops have
-  unit-test coverage only. Set `TACON_LIVE=1` in `.env` after
-  configuring `TACON_TEST_ORG` + `TACON_TEST_ASSIGNMENT_PREFIX` (see
-  `.env.example`) to run them.
+- Live e2e tests cover all five ops (direct + via-pr where relevant).
+  Set `TACON_LIVE=1` in `.env` after configuring `TACON_TEST_ORG` +
+  `TACON_TEST_ASSIGNMENT_PREFIX` (see `.env.example`) to run them. The
+  branch-protection write live test pytest.skips on tokens without
+  admin scope, so it's harmless on TA tokens.
 
 ## License
 
