@@ -26,6 +26,12 @@ from tacon.db import (
 )
 from tacon.github_client import RateLimitedClient
 from tacon.ops import ConfirmCallback, Op, RepoDiff, get_op_class, list_ops
+from tacon.ops._branch_protection_rule import (
+    BranchProtectionRule,
+    RuleValidationError,
+    load_rule_from_yaml,
+    load_rule_template,
+)
 from tacon.ops.add_branch_protection import AddBranchProtection
 from tacon.ops.add_ci_workflow import AddCIWorkflow, WorkflowValidationError
 from tacon.ops.add_file import AddFile
@@ -131,7 +137,25 @@ def run(
         str | None,
         typer.Option(
             "--branch",
-            help="(add-branch-protection) Branch to inspect. Defaults to each repo's default.",
+            help="(add-branch-protection) Branch to inspect/protect. Defaults to "
+            "each repo's default.",
+        ),
+    ] = None,
+    rule_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--rule-from",
+            help="(add-branch-protection) YAML file describing the desired "
+            "branch-protection rule. Switches to write mode. Mutually exclusive "
+            "with --rule-template.",
+        ),
+    ] = None,
+    rule_template: Annotated[
+        str | None,
+        typer.Option(
+            "--rule-template",
+            help="(add-branch-protection) Bundled rule template name. Switches to "
+            "write mode. Try `tacon-default` or `strict-pr`.",
         ),
     ] = None,
     message: Annotated[
@@ -197,11 +221,35 @@ def run(
     elif op_name == "add-branch-protection":
         if via_pr:
             err_console.print(
-                "add-branch-protection is read-only; --via-pr does not apply. "
-                "Drop the flag and re-run."
+                "add-branch-protection: branch protection is repo-level config, "
+                "not branch content; --via-pr does not apply. Drop the flag."
             )
             raise typer.Exit(2)
-        op = AddBranchProtection(branch=branch, assignment_id=assignment_id)
+        if rule_from is not None and rule_template is not None:
+            err_console.print(
+                "add-branch-protection: --rule-from and --rule-template are "
+                "mutually exclusive. Pick one."
+            )
+            raise typer.Exit(2)
+        rule: BranchProtectionRule | None = None
+        if rule_from is not None:
+            try:
+                rule = load_rule_from_yaml(rule_from)
+            except FileNotFoundError as exc:
+                err_console.print(f"--rule-from: {exc}")
+                raise typer.Exit(2) from exc
+            except RuleValidationError as exc:
+                err_console.print(f"--rule-from: {exc}")
+                raise typer.Exit(2) from exc
+        elif rule_template is not None:
+            try:
+                rule = load_rule_template(rule_template)
+            except RuleValidationError as exc:
+                err_console.print(f"--rule-template: {exc}")
+                raise typer.Exit(2) from exc
+        op = AddBranchProtection(
+            branch=branch, assignment_id=assignment_id, rule=rule
+        )
     elif op_name == "fix-ci-workflow":
         if not workflow_name or not bump_action:
             err_console.print(
@@ -445,9 +493,26 @@ def _reconstruct_op(
             via_pr=via_pr,
         )
     if op_class == "add_branch_protection":
+        # Rebuild the rule from the recorded args dict (None for survey ops,
+        # a dict for write ops). from_dict re-validates it on the way in.
+        rule_dict = args.get("rule")
+        rule_obj: BranchProtectionRule | None = None
+        if isinstance(rule_dict, dict):
+            from tacon.ops._branch_protection_rule import from_dict as _rule_from_dict
+
+            try:
+                rule_obj = _rule_from_dict(rule_dict)
+            except RuleValidationError as exc:
+                err_console.print(
+                    f"resume: stored rule failed re-validation: {exc}. "
+                    "If the schema changed since this op was originally run, "
+                    "re-run `tacon run add-branch-protection ...` instead."
+                )
+                raise typer.Exit(2) from exc
         return AddBranchProtection(
             branch=_opt_str(args.get("branch")),
             assignment_id=_opt_str(args.get("assignment_id")),
+            rule=rule_obj,
         )
 
     err_console.print(f"resume: unknown op_class '{op_class}'.")

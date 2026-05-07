@@ -403,14 +403,15 @@ def test_run_add_file_via_pr_flag_threads_through(
 
 
 def test_run_add_branch_protection_with_via_pr_exits_2(seeded_db_path: Path) -> None:
-    """add-branch-protection is read-only; --via-pr makes no sense → exit 2."""
+    """add-branch-protection writes repo-level config, not branch content; --via-pr → exit 2."""
     result = runner.invoke(
         app,
         ["run", "add-branch-protection", "--via-pr", "--db", str(seeded_db_path)],
     )
     assert result.exit_code == 2
     output = (result.stdout or "") + (result.stderr or "")
-    assert "read-only" in output
+    flat = " ".join(output.split())
+    assert "repo-level config" in flat or "does not apply" in flat
 
 
 # ---------- run: add-branch-protection ----------
@@ -431,6 +432,140 @@ def test_run_add_branch_protection_dry_run(
     )
     assert result.exit_code == 0
     assert "add_branch_protection" in result.stdout
+
+
+# ---------- run: add-branch-protection write mode ----------
+
+
+def test_run_add_branch_protection_rejects_both_rule_flags(
+    seeded_db_path: Path, tmp_path: Path
+) -> None:
+    """--rule-from and --rule-template are mutually exclusive."""
+    rule_file = tmp_path / "rule.yaml"
+    rule_file.write_text("required_approving_review_count: 1\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "run", "add-branch-protection",
+            "--rule-from", str(rule_file),
+            "--rule-template", "tacon-default",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert result.exit_code == 2
+    flat = " ".join(((result.stdout or "") + (result.stderr or "")).split())
+    assert "mutually exclusive" in flat
+
+
+def test_run_add_branch_protection_rule_from_missing_file_exits_2(
+    seeded_db_path: Path, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run", "add-branch-protection",
+            "--rule-from", str(tmp_path / "nope.yaml"),
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert result.exit_code == 2
+    flat = " ".join(((result.stdout or "") + (result.stderr or "")).split())
+    assert "not found" in flat
+
+
+def test_run_add_branch_protection_rule_from_invalid_yaml_exits_2(
+    seeded_db_path: Path, tmp_path: Path
+) -> None:
+    rule_file = tmp_path / "bad.yaml"
+    rule_file.write_text("required_approving_review_count: [unclosed", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "run", "add-branch-protection",
+            "--rule-from", str(rule_file),
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert result.exit_code == 2
+
+
+def test_run_add_branch_protection_unknown_template_exits_2(
+    seeded_db_path: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run", "add-branch-protection",
+            "--rule-template", "does-not-exist",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert result.exit_code == 2
+    flat = " ".join(((result.stdout or "") + (result.stderr or "")).split())
+    assert "unknown rule template" in flat
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_run_add_branch_protection_with_rule_template_dry_run(
+    mock_rl: MagicMock,
+    seeded_db_path: Path,
+    fake_gh: MagicMock,
+    fake_repo: MagicMock,
+) -> None:
+    """--rule-template tacon-default in dry-run mode plans without writing."""
+    mock_rl.return_value = fake_gh
+    branch = MagicMock(name="Branch")
+    branch.protected = False
+    fake_repo.get_branch.return_value = branch
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "add-branch-protection",
+            "--rule-template", "tacon-default",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    # Plan summary mentions write-mode language.
+    assert "set protection" in result.stdout
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_run_add_branch_protection_with_rule_from_apply(
+    mock_rl: MagicMock,
+    seeded_db_path: Path,
+    fake_gh: MagicMock,
+    fake_repo: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """--rule-from FILE --apply writes protection via edit_protection."""
+    mock_rl.return_value = fake_gh
+    branch = MagicMock(name="Branch")
+    branch.protected = False
+    fake_repo.get_branch.return_value = branch
+
+    rule_file = tmp_path / "my-rule.yaml"
+    rule_file.write_text(
+        "required_approving_review_count: 2\nenforce_admins: true\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "run", "add-branch-protection",
+            "--rule-from", str(rule_file),
+            "--apply", "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
+    assert "applied" in result.stdout
+    # The rule made it down to PyGithub.
+    assert branch.edit_protection.call_count == 3
+    last_kw = branch.edit_protection.call_args.kwargs
+    assert last_kw.get("required_approving_review_count") == 2
+    assert last_kw.get("enforce_admins") is True
 
 
 # ---------- rollback ----------
@@ -820,6 +955,58 @@ def test_resume_add_branch_protection_branch_constructs(
     assert resume_res.exit_code == 1
     output = (resume_res.stdout or "") + (resume_res.stderr or "")
     assert "no failed repos are still active" in output
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_add_branch_protection_write_mode_threads_rule(
+    mock_rl: MagicMock,
+    seeded_db_path: Path,
+    fake_gh: MagicMock,
+    fake_repo: MagicMock,
+) -> None:
+    """A resumed write-mode op reads the rule dict from op_args and replays it."""
+    from tacon import __version__
+    from tacon.db import insert_event
+
+    mock_rl.return_value = fake_gh
+
+    db = open_db(seeded_db_path)
+    op_id = "synthetic-bp-write-1"
+    op_args_json = (
+        '{"assignment_id": null, "branch": "main", '
+        '"mode": "write", '
+        '"rule": {"required_approving_review_count": 1, '
+        '"dismiss_stale_reviews": false, "require_code_owner_reviews": false, '
+        '"required_status_checks": null, "strict_status_checks": false, '
+        '"enforce_admins": false, "allow_force_pushes": false, '
+        '"allow_deletions": false, "required_linear_history": false}}'
+    )
+    insert_event(
+        db,
+        op_id=op_id,
+        op_class="add_branch_protection",
+        op_args_json=op_args_json,
+        tacon_version=__version__,
+        repo_id="cs101/alice-hw3",
+        student_id="alice",
+        status="failed",
+        error_message="seeded",
+    )
+
+    branch = MagicMock(name="Branch")
+    branch.protected = False
+    fake_repo.get_branch.return_value = branch
+
+    resume_res = runner.invoke(
+        app, ["resume", op_id, "--yes", "--db", str(seeded_db_path)]
+    )
+    assert resume_res.exit_code == 0, (resume_res.stdout or "") + (
+        resume_res.stderr or ""
+    )
+    # The replay applied the rule via edit_protection.
+    assert branch.edit_protection.called
+    last_kw = branch.edit_protection.call_args.kwargs
+    assert last_kw.get("required_approving_review_count") == 1
 
 
 @patch("tacon.cli.RateLimitedClient")
