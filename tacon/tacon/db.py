@@ -346,6 +346,8 @@ def update_event_status(
     error_message: str | None = None,
     applied_at: str | None = None,
     rolled_back_at: str | None = None,
+    pr_number: int | None = None,
+    pr_branch: str | None = None,
 ) -> None:
     updates: dict[str, Any] = {"status": status}
     if commit_sha is not None:
@@ -360,6 +362,10 @@ def update_event_status(
         updates["applied_at"] = applied_at
     if rolled_back_at is not None:
         updates["rolled_back_at"] = rolled_back_at
+    if pr_number is not None:
+        updates["pr_number"] = pr_number
+    if pr_branch is not None:
+        updates["pr_branch"] = pr_branch
     _t(db, "events").update(event_id, updates)
 
 

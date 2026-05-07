@@ -106,6 +106,9 @@ class Op(ABC):
 
     requires_clone: bool = False  # True if the op needs real git semantics
     supports_rollback: bool = True  # False for inherently un-rollbackable ops
+    # True if the op accepts `--via-pr` (creates a tacon branch + opens a PR
+    # rather than committing directly to default). Read-only ops set False.
+    supports_via_pr: bool = False
 
     @abstractmethod
     def plan(self, db: Database, gh: RateLimitedClient) -> Diff:

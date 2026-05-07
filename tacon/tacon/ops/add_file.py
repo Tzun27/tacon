@@ -9,11 +9,19 @@ Rollback safety: store the blob SHA at apply time. On rollback, fetch the
 file's CURRENT blob SHA and compare. Mismatch -> skipped_dirty (no delete).
 This eliminates the "student git-reverted and re-added similar content"
 silent-data-loss path that commit-lineage checks miss.
+
+`--via-pr` mode (v0.2): instead of pushing to the repo's default branch,
+we create `tacon/<op-class>-<op-id-prefix>` at default-branch HEAD, push
+the file there, and open a PR. Rollback closes the PR and deletes the
+branch. Most of that lives in `tacon.ops._via_pr`; this module just
+threads `branch=` through PyGithub's contents API and decides which
+helper to call when the via_pr flag is set.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from github import GithubException, UnknownObjectException
@@ -38,6 +46,13 @@ from tacon.ops import (
     RollbackResult,
     register,
 )
+from tacon.ops._via_pr import (
+    BranchConflictError,
+    close_pr_and_delete_branch,
+    ensure_branch,
+    open_or_find_pr,
+    via_pr_branch_name,
+)
 
 if TYPE_CHECKING:
     from sqlite_utils import Database
@@ -49,11 +64,23 @@ OP_NAME = "add-file"
 OP_CLASS = "add_file"
 
 
+@dataclass
+class _ApplyOutcome:
+    """Internal: per-repo apply outcome packaging both direct-write + via-pr fields."""
+
+    status: str
+    commit_sha: str
+    blob_sha: str
+    pr_number: int | None
+    pr_branch: str | None
+
+
 class AddFile(Op):
     """Push a single file to every active repo in scope."""
 
     requires_clone = False
     supports_rollback = True
+    supports_via_pr = True
 
     # Subclasses (e.g. AddCIWorkflow) override to register a different op_class
     # in the events table and registry without duplicating apply/rollback.
@@ -67,11 +94,13 @@ class AddFile(Op):
         content: str,
         message: str = "tacon: add file",
         assignment_id: str | None = None,
+        via_pr: bool = False,
     ) -> None:
         self.path = path
         self.content = content
         self.message = message
         self.assignment_id = assignment_id
+        self.via_pr = via_pr
 
     @property
     def args(self) -> dict[str, object]:
@@ -83,6 +112,7 @@ class AddFile(Op):
             "content_len": len(self.content.encode("utf-8")),
             "message": self.message,
             "assignment_id": self.assignment_id,
+            "via_pr": self.via_pr,
         }
 
     # ---------- plan ----------
@@ -155,6 +185,7 @@ class AddFile(Op):
         op_id = _new_op_id()
         op_args_json = json.dumps(self.args, sort_keys=True)
         result = ApplyResult(op_id=op_id, per_repo=[])
+        branch_name = via_pr_branch_name(self.op_class_name, op_id) if self.via_pr else None
 
         for repo_diff in diff.per_repo:
             # Pre-record: every per-repo decision lands in events, even skips.
@@ -194,7 +225,35 @@ class AddFile(Op):
                 continue
 
             try:
-                commit_sha, blob_sha = self._push_file(gh, repo_diff.repo_id)
+                if self.via_pr:
+                    assert branch_name is not None  # set above when via_pr=True
+                    outcome = self._apply_via_pr(gh, repo_diff, branch_name, op_id)
+                else:
+                    commit_sha, blob_sha = self._push_file(gh, repo_diff.repo_id)
+                    outcome = _ApplyOutcome(
+                        status="applied",
+                        commit_sha=commit_sha,
+                        blob_sha=blob_sha,
+                        pr_number=None,
+                        pr_branch=None,
+                    )
+            except BranchConflictError as exc:
+                update_event_status(
+                    db,
+                    event_id,
+                    status="skipped",
+                    error_class="conflict",
+                    error_message=str(exc),
+                )
+                result.per_repo.append(
+                    RepoApplyResult(
+                        repo_id=repo_diff.repo_id,
+                        status="skipped",
+                        error_class="conflict",
+                        error_message=str(exc),
+                    )
+                )
+                continue
             except GithubException as exc:
                 err_class = classify_error(exc)
                 update_event_status(
@@ -219,34 +278,87 @@ class AddFile(Op):
                 db,
                 event_id,
                 status="applied",
-                commit_sha=commit_sha,
-                applied_blob_sha=blob_sha,
+                commit_sha=outcome.commit_sha,
+                applied_blob_sha=outcome.blob_sha,
                 applied_at=now_iso(),
+                pr_number=outcome.pr_number,
+                pr_branch=outcome.pr_branch,
             )
             result.per_repo.append(
                 RepoApplyResult(
                     repo_id=repo_diff.repo_id,
                     status="applied",
-                    commit_sha=commit_sha,
-                    applied_blob_sha=blob_sha,
+                    commit_sha=outcome.commit_sha,
+                    applied_blob_sha=outcome.blob_sha,
                 )
             )
 
         return result
 
-    def _push_file(self, gh: RateLimitedClient, repo_id: str) -> tuple[str, str]:
-        """Returns (commit_sha, blob_sha) of the new file."""
+    def _push_file(
+        self, gh: RateLimitedClient, repo_id: str, *, branch: str | None = None
+    ) -> tuple[str, str]:
+        """Returns (commit_sha, blob_sha) of the new file.
+
+        ``branch=None`` (default) targets the repo's default branch (existing
+        v0.1 behavior). When set, PyGithub's ``create_file`` writes the new
+        blob onto the named branch directly — used by ``--via-pr`` mode.
+        """
         repo = gh.get_repo(repo_id)
+        kwargs: dict[str, object] = {}
+        if branch is not None:
+            kwargs["branch"] = branch
         response = gh.call(
             repo.create_file,
             self.path,
             self.message,
             self.content,
+            **kwargs,
         )
         # PyGithub returns {'commit': Commit, 'content': ContentFile}
         commit = response["commit"]
         content = response["content"]
         return commit.sha, content.sha
+
+    def _apply_via_pr(
+        self,
+        gh: RateLimitedClient,
+        repo_diff: RepoDiff,
+        branch_name: str,
+        op_id: str,
+    ) -> _ApplyOutcome:
+        """The via-pr applies a write on a fresh tacon branch + opens a PR.
+
+        Step order:
+        1. Get the default branch HEAD SHA (one call per repo).
+        2. ensure_branch(...) creates `branch_name` at that SHA, or no-ops
+           if the branch already exists at the same SHA. Different SHA
+           raises BranchConflictError (caller maps to skipped).
+        3. _push_file with branch=branch_name writes the blob.
+        4. open_or_find_pr opens (or recovers) the PR.
+        """
+        repo = gh.get_repo(repo_diff.repo_id)
+        default_branch = repo.default_branch
+        head = gh.call(repo.get_branch, default_branch)
+        base_sha = head.commit.sha
+
+        ensure_branch(gh, repo, branch_name, base_sha)
+        commit_sha, blob_sha = self._push_file(gh, repo_diff.repo_id, branch=branch_name)
+        pr_number = open_or_find_pr(
+            gh,
+            repo,
+            branch=branch_name,
+            base=default_branch,
+            title=f"tacon: {self.message}",
+            body=_build_pr_body(self, repo_diff, op_id),
+        )
+        return _ApplyOutcome(
+            status="applied",
+            commit_sha=commit_sha,
+            blob_sha=blob_sha,
+            pr_number=pr_number,
+            pr_branch=branch_name,
+        )
 
     # ---------- rollback ----------
 
@@ -270,9 +382,14 @@ class AddFile(Op):
 
         for event in events:
             repo_id = event["repo_id"]
-            applied_blob_sha = event["applied_blob_sha"]
+            via_pr_event = event.get("pr_number") is not None
             try:
-                outcome = cls._rollback_one(gh, repo_id, path, applied_blob_sha, revert_message)
+                if via_pr_event:
+                    outcome = cls._rollback_via_pr(gh, repo_id, event)
+                else:
+                    outcome = cls._rollback_one(
+                        gh, repo_id, path, event["applied_blob_sha"], revert_message
+                    )
             except GithubException as exc:
                 err_class = classify_error(exc)
                 update_event_status(
@@ -346,8 +463,59 @@ class AddFile(Op):
             revert_sha=revert_sha,
         )
 
+    @staticmethod
+    def _rollback_via_pr(
+        gh: RateLimitedClient, repo_id: str, event: dict[str, object]
+    ) -> RepoRollbackResult:
+        """Rollback for a via-pr event: close the PR, delete the branch.
+
+        See `tacon.ops._via_pr.close_pr_and_delete_branch` for the state
+        table. Merged PRs are surfaced as ``skipped_dirty`` — the student/TA
+        merged the change, and we deliberately don't auto-revert against
+        default branch (which is the very surface --via-pr exists to avoid).
+        """
+        pr_number_raw = event["pr_number"]
+        pr_number = int(pr_number_raw) if isinstance(pr_number_raw, (int, str)) else 0
+        branch = str(event["pr_branch"])
+        repo = gh.get_repo(repo_id)
+        outcome = close_pr_and_delete_branch(
+            gh, repo, pr_number=pr_number, branch=branch
+        )
+        if outcome.status == "skipped_dirty":
+            return RepoRollbackResult(
+                repo_id=repo_id,
+                status="skipped_dirty",
+                error_message=outcome.note,
+            )
+        return RepoRollbackResult(
+            repo_id=repo_id,
+            status="rolled_back",
+            error_message=outcome.note or None,
+        )
+
 
 # ---------- helpers ----------
+
+
+def _build_pr_body(op: AddFile, repo_diff: RepoDiff, op_id: str) -> str:
+    """Render the PR body shown in the GitHub UI.
+
+    Sections: 1-line tacon summary, the unified diff from plan(), and a
+    correlation footer that names the op_id so a TA reading the PR can
+    cross-reference their local events table without machine parsing.
+    """
+    summary = (
+        f"`tacon` would like to apply **{op.op_class_name}** to this repo "
+        f"(op id `{op_id}`).\n\nFile: `{op.path}`\nMessage: {op.message}"
+    )
+    diff_block = (
+        f"\n\n## Proposed change\n\n```diff\n{repo_diff.unified_diff.rstrip()}\n```"
+    )
+    footer = (
+        f"\n\n---\n_Generated by `tacon`. To roll back this PR, run "
+        f"`tacon rollback {op_id}` locally._"
+    )
+    return summary + diff_block + footer
 
 
 def _new_op_id() -> str:
