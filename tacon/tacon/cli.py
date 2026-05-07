@@ -143,6 +143,14 @@ def run(
     ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run/--apply", help="Plan only vs apply.")] = True,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip per-repo confirms.")] = False,
+    via_pr: Annotated[
+        bool,
+        typer.Option(
+            "--via-pr",
+            help="Open a PR per repo instead of pushing to default branch. "
+            "Use for branch-protected classrooms.",
+        ),
+    ] = False,
     rate: Annotated[float, typer.Option("--rate", help="Max API calls/sec.")] = 3.0,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
 ) -> None:
@@ -153,7 +161,13 @@ def run(
             err_console.print("add-file requires --path and --content-from")
             raise typer.Exit(2)
         content = content_from.read_text(encoding="utf-8")
-        op = AddFile(path=path, content=content, message=message, assignment_id=assignment_id)
+        op = AddFile(
+            path=path,
+            content=content,
+            message=message,
+            assignment_id=assignment_id,
+            via_pr=via_pr,
+        )
     elif op_name == "delete-file":
         if not path:
             err_console.print("delete-file requires --path")
@@ -162,6 +176,7 @@ def run(
             path=path,
             message=message if message != "tacon: add file" else "tacon: delete file",
             assignment_id=assignment_id,
+            via_pr=via_pr,
         )
     elif op_name == "add-ci-workflow":
         if not workflow_name or not content_from:
@@ -174,11 +189,18 @@ def run(
                 content=content,
                 message=message if message != "tacon: add file" else None,
                 assignment_id=assignment_id,
+                via_pr=via_pr,
             )
         except WorkflowValidationError as exc:
             err_console.print(f"add-ci-workflow: invalid workflow: {exc}")
             raise typer.Exit(2) from exc
     elif op_name == "add-branch-protection":
+        if via_pr:
+            err_console.print(
+                "add-branch-protection is read-only; --via-pr does not apply. "
+                "Drop the flag and re-run."
+            )
+            raise typer.Exit(2)
         op = AddBranchProtection(branch=branch, assignment_id=assignment_id)
     elif op_name == "fix-ci-workflow":
         if not workflow_name or not bump_action:
@@ -204,6 +226,7 @@ def run(
                     message if message != "tacon: add file" else "tacon: fix CI workflow"
                 ),
                 assignment_id=assignment_id,
+                via_pr=via_pr,
             )
         except WorkflowValidationError as exc:
             err_console.print(f"fix-ci-workflow: {exc}")

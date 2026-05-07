@@ -361,6 +361,58 @@ def test_run_fix_ci_workflow_identical_bump_action_exits_2(seeded_db_path: Path)
     assert result.exit_code == 2
 
 
+# ---------- run: --via-pr ----------
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_run_add_file_via_pr_flag_threads_through(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock, tmp_path: Path
+) -> None:
+    """`--via-pr --apply` triggers the branch+PR dance instead of direct push."""
+    mock_rl.return_value = fake_gh
+    fake_repo.get_contents.side_effect = _missing()
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    fake_repo.create_file.return_value = {
+        "commit": _commit("c-pr"),
+        "content": _content_file("blob-pr"),
+    }
+    new_pr = MagicMock(name="PR")
+    new_pr.number = 13
+    fake_repo.create_pull.return_value = new_pr
+    content_file = tmp_path / "S.md"
+    content_file.write_text("hi\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "run", "add-file",
+            "--path", "S.md",
+            "--content-from", str(content_file),
+            "--via-pr",
+            "--apply", "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
+    assert "3 applied" in result.stdout
+    fake_repo.create_pull.assert_called()
+    fake_repo.create_git_ref.assert_called()
+
+
+def test_run_add_branch_protection_with_via_pr_exits_2(seeded_db_path: Path) -> None:
+    """add-branch-protection is read-only; --via-pr makes no sense → exit 2."""
+    result = runner.invoke(
+        app,
+        ["run", "add-branch-protection", "--via-pr", "--db", str(seeded_db_path)],
+    )
+    assert result.exit_code == 2
+    output = (result.stdout or "") + (result.stderr or "")
+    assert "read-only" in output
+
+
 # ---------- run: add-branch-protection ----------
 
 
