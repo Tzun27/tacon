@@ -444,10 +444,13 @@ def test_rollback_unknown_op_id_exits_1(seeded_db_path: Path) -> None:
 
 
 @patch("tacon.cli.RateLimitedClient")
-def test_rollback_unsupported_op_for_read_only(
+def test_rollback_of_survey_op_says_nothing_to_roll_back(
     mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock
 ) -> None:
-    """add-branch-protection is read-only; rollback should error cleanly."""
+    """A survey-mode add-branch-protection op produces 'reported' events; rollback
+    filters to 'applied', so it finds nothing and exits 1 with a clear message
+    (rather than upfront 'does not support rollback', because the class flag is
+    True now that write mode is supported)."""
     mock_rl.return_value = fake_gh
     branch = MagicMock(name="Branch")
     branch.protected = False
@@ -463,7 +466,6 @@ def test_rollback_unsupported_op_for_read_only(
         ],
     )
     assert apply_result.exit_code == 0
-    # Extract op_id from the output
     op_id = _extract_op_id(apply_result.stdout)
 
     rollback_result = runner.invoke(
@@ -471,7 +473,10 @@ def test_rollback_unsupported_op_for_read_only(
     )
     assert rollback_result.exit_code == 1
     output = (rollback_result.stdout or "") + (rollback_result.stderr or "")
-    assert "does not support rollback" in output
+    # rich line-wraps the message; normalize whitespace before checking phrases.
+    flat = " ".join(output.split())
+    assert "nothing to roll back" in flat
+    assert "read-only survey" in flat
 
 
 @patch("tacon.cli.RateLimitedClient")

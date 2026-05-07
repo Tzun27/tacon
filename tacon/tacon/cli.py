@@ -282,6 +282,18 @@ def rollback(
 
     gh = RateLimitedClient(rate_per_sec=rate)
     result = op_cls.rollback(db, gh, op_id)
+    if not result.per_repo:
+        # No applied events for this op_id — happens when the op only ever
+        # produced 'reported' events (a survey, e.g. add-branch-protection
+        # without a rule), or when every event was 'skipped'/'failed' so
+        # there's nothing to undo. Tell the user clearly rather than
+        # printing an empty table.
+        err_console.print(
+            f"No 'applied' events for op_id={op_id} — nothing to roll back. "
+            "(This typically means the op was a read-only survey, or every "
+            "repo was skipped/failed at apply time.)"
+        )
+        raise typer.Exit(1)
     _print_rollback_result(result)
 
 

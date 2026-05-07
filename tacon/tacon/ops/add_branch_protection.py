@@ -1,22 +1,30 @@
-"""AddBranchProtection: read-only survey of branch protection across repos.
+"""AddBranchProtection: branch-protection survey + write across repos.
 
-v0.1 ships read-only. The op fetches branch protection settings for the
-target branch (default: each repo's default_branch) and renders a
-status table. It writes one event per repo with status='reported' so
-you have an audit trail of "what protections did we see on day X?".
+Two modes:
 
-Why read-only: setting branch protection requires an admin-scoped token
-which most TA/maintainer tokens don't have. Surveying first lets us see
-which repos are misconfigured before deciding whether to escalate to a
-write op (planned for v0.2).
+  - **survey** (default): fetches branch protection state and records
+    `reported` events. Read-only; ``supports_rollback`` is False.
+  - **write** (when ``rule`` is set): apply a desired
+    :class:`BranchProtectionRule` to each target branch via PyGithub's
+    ``branch.edit_protection``. Plan() reads the prior state and stashes
+    a serialized snapshot; apply() writes the rule + persists that
+    snapshot to ``events.prior_state_json``; rollback() restores it
+    (or removes protection entirely if the prior state was unprotected).
+    ``supports_rollback`` becomes True in this mode.
 
-supports_rollback = False — there's nothing to roll back from a survey.
+Why both live here: the read path is identical (fetch current
+protection), and the diff render in plan() switches based on whether a
+target rule was supplied. Mode is observable from ``args["rule"]`` in
+the events table — null = survey, dict = write.
+
+Note: branch protection is repo-level config, not branch content, so
+``supports_via_pr`` stays False (no PR can wrap an admin action).
 """
 
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from github import GithubException, UnknownObjectException
 
@@ -30,8 +38,11 @@ from tacon.ops import (
     Op,
     RepoApplyResult,
     RepoDiff,
+    RepoRollbackResult,
+    RollbackResult,
     register,
 )
+from tacon.ops._branch_protection_rule import BranchProtectionRule, from_dict
 
 if TYPE_CHECKING:
     from sqlite_utils import Database
@@ -44,27 +55,37 @@ OP_CLASS = "add_branch_protection"
 
 
 class AddBranchProtection(Op):
-    """Survey current branch protection across active repos in scope."""
+    """Survey current branch protection — or apply a desired rule — across active repos."""
 
     requires_clone = False
-    supports_rollback = False
+    # True at class level so rollback() can be invoked via the CLI; rollback()
+    # itself filters to status='applied' events, so survey ops (which write
+    # status='reported' events) are naturally excluded — calling
+    # ``tacon rollback <op-id-of-a-survey>`` returns an empty result, which is
+    # the right answer.
+    supports_rollback = True
 
     def __init__(
         self,
         *,
         branch: str | None = None,
         assignment_id: str | None = None,
+        rule: BranchProtectionRule | None = None,
     ) -> None:
         # branch=None -> use each repo's default_branch
         self.branch = branch
         self.assignment_id = assignment_id
+        # rule=None -> survey mode (existing v0.1 behavior)
+        # rule=BranchProtectionRule -> write mode
+        self.rule = rule
 
     @property
     def args(self) -> dict[str, object]:
         return {
             "branch": self.branch,
             "assignment_id": self.assignment_id,
-            "mode": "report",
+            "mode": "write" if self.rule is not None else "report",
+            "rule": self.rule.to_dict() if self.rule is not None else None,
         }
 
     # ---------- plan ----------
@@ -76,7 +97,36 @@ class AddBranchProtection(Op):
             repo_id = row["id"]
             student_id = row["student_id"]
 
-            summary, detail, blocked, reason = self._inspect(gh, repo_id, target_branch)
+            current_summary, current_detail, blocked, reason = self._inspect(
+                gh, repo_id, target_branch
+            )
+
+            if self.rule is None:
+                # Survey mode (existing v0.1 behavior).
+                summary, detail = current_summary, current_detail
+            else:
+                # Write mode: render desired-state vs current diff.
+                if blocked:
+                    summary = current_summary
+                    detail = current_detail
+                else:
+                    current_dict = self._read_current_as_dict(gh, repo_id, target_branch)
+                    desired_dict = self.rule.to_dict()
+                    if _rule_dicts_equal(current_dict, desired_dict):
+                        # Idempotent: nothing to change.
+                        blocked = True
+                        reason = "branch already at desired protection state"
+                        summary = f"BLOCKED: no change ({current_summary})"
+                        detail = (
+                            "# already at desired protection state — no change\n"
+                        )
+                    else:
+                        summary = (
+                            f"set protection on '{target_branch}': "
+                            f"{_describe_rule(self.rule)}"
+                        )
+                        detail = _render_rule_diff(current_dict, desired_dict)
+
             diff.per_repo.append(
                 RepoDiff(
                     repo_id=repo_id,
@@ -88,6 +138,33 @@ class AddBranchProtection(Op):
                 )
             )
         return diff
+
+    def _read_current_as_dict(
+        self, gh: RateLimitedClient, repo_id: str, target_branch: str
+    ) -> dict[str, Any] | None:
+        """Snapshot the current protection in the BranchProtectionRule shape.
+
+        Returns ``None`` if the branch is currently unprotected (or if details
+        are restricted by token scope — rollback would treat that as 'remove
+        protection' since we can't reproduce it). Returns a rule-shaped dict
+        when protection is readable.
+        """
+        try:
+            repo = gh.get_repo(repo_id)
+            branch_obj = gh.call(repo.get_branch, target_branch)
+        except (UnknownObjectException, GithubException):
+            return None
+        if not bool(getattr(branch_obj, "protected", False)):
+            return None
+        try:
+            protection = gh.call(branch_obj.get_protection)
+        except (UnknownObjectException, GithubException):
+            # Protected, but we can't read the rule (e.g. token scope). Best we
+            # can do is return None — rollback will then remove protection. The
+            # user is implicitly opting in by writing protection without admin
+            # read scope; we surface this in the apply event's error_message.
+            return None
+        return _protection_to_rule_dict(protection)
 
     def _inspect(
         self, gh: RateLimitedClient, repo_id: str, branch: str
@@ -147,7 +224,7 @@ class AddBranchProtection(Op):
         diff: Diff,
         confirm: ConfirmCallback,
     ) -> ApplyResult:
-        """Persist the read-only survey to events for audit purposes.
+        """Apply the rule (write mode) or persist the survey (survey mode).
 
         confirm is honored — declining still records a 'skipped' event so
         users can later see which repos they bypassed.
@@ -191,22 +268,214 @@ class AddBranchProtection(Op):
                 result.per_repo.append(RepoApplyResult(repo_id=repo_diff.repo_id, status="skipped"))
                 continue
 
+            if self.rule is None:
+                # Survey mode: record the observation. No GH write.
+                update_event_status(
+                    db,
+                    event_id,
+                    status="reported",
+                    error_message=repo_diff.summary,  # store the summary for audit
+                    applied_at=now_iso(),
+                )
+                result.per_repo.append(
+                    RepoApplyResult(
+                        repo_id=repo_diff.repo_id,
+                        status="reported",
+                        error_message=repo_diff.summary,
+                    )
+                )
+                continue
+
+            # --- write mode ---
+            target_branch = self.branch or _resolve_default_branch(db, repo_diff.repo_id)
+            try:
+                prior_state = self._read_current_as_dict(
+                    gh, repo_diff.repo_id, target_branch
+                )
+                self._write_protection(gh, repo_diff.repo_id, target_branch, self.rule)
+            except GithubException as exc:
+                err_class = classify_error(exc)
+                update_event_status(
+                    db,
+                    event_id,
+                    status="failed",
+                    error_class=err_class,
+                    error_message=str(exc),
+                    applied_at=now_iso(),
+                )
+                result.per_repo.append(
+                    RepoApplyResult(
+                        repo_id=repo_diff.repo_id,
+                        status="failed",
+                        error_class=err_class,
+                        error_message=str(exc),
+                    )
+                )
+                continue
+
+            # prior_state is None when the branch was previously unprotected;
+            # we serialize JSON-null in that case. The non-None branch
+            # serializes the rule-shaped dict for symmetric restore.
+            prior_json = json.dumps(prior_state, sort_keys=True)
             update_event_status(
                 db,
                 event_id,
-                status="reported",
-                error_message=repo_diff.summary,  # store the summary for audit
+                status="applied",
                 applied_at=now_iso(),
+                prior_state_json=prior_json,
             )
             result.per_repo.append(
                 RepoApplyResult(
                     repo_id=repo_diff.repo_id,
-                    status="reported",
-                    error_message=repo_diff.summary,
+                    status="applied",
                 )
             )
 
         return result
+
+    def _write_protection(
+        self,
+        gh: RateLimitedClient,
+        repo_id: str,
+        target_branch: str,
+        rule: BranchProtectionRule,
+    ) -> None:
+        """Apply the rule to the target branch."""
+        repo = gh.get_repo(repo_id)
+        branch_obj = gh.call(repo.get_branch, target_branch)
+        gh.call(branch_obj.edit_protection, **rule.to_edit_protection_kwargs())
+
+    # ---------- rollback ----------
+
+    @classmethod
+    def rollback(
+        cls, db: Database, gh: RateLimitedClient, op_id: str
+    ) -> RollbackResult:
+        """Restore each repo's prior protection from events.prior_state_json.
+
+        Survey events (status='reported') are ignored — they have nothing
+        to roll back. Write events (status='applied') trigger a per-repo
+        restore: the snapshot is None for "was unprotected" (rollback
+        removes protection) or a rule-shaped dict (rollback re-applies it
+        via edit_protection). Drift check refuses to clobber state that
+        no longer matches what we wrote.
+        """
+        from tacon.db import get_events_by_op
+
+        result = RollbackResult(op_id=op_id, per_repo=[])
+        events = get_events_by_op(db, op_id, status="applied")
+        if not events:
+            return result
+
+        first = events[0]
+        try:
+            args = json.loads(first["op_args_json"])
+            applied_rule_dict = args.get("rule")
+            target_branch = args.get("branch")
+        except (KeyError, json.JSONDecodeError) as e:
+            raise RuntimeError(f"malformed op_args_json on op {op_id}: {e}") from e
+
+        for event in events:
+            repo_id = event["repo_id"]
+            try:
+                outcome = cls._rollback_one(
+                    gh,
+                    repo_id,
+                    target_branch=target_branch,
+                    applied_rule_dict=applied_rule_dict,
+                    prior_state_json=event.get("prior_state_json"),
+                )
+            except GithubException as exc:
+                err_class = classify_error(exc)
+                update_event_status(
+                    db,
+                    event["id"],
+                    status="failed",
+                    error_class=err_class,
+                    error_message=f"rollback failed: {exc}",
+                )
+                result.per_repo.append(
+                    RepoRollbackResult(
+                        repo_id=repo_id,
+                        status="failed",
+                        error_class=err_class,
+                        error_message=str(exc),
+                    )
+                )
+                continue
+
+            if outcome.status == "rolled_back":
+                update_event_status(
+                    db, event["id"], status="rolled_back", rolled_back_at=now_iso()
+                )
+            else:
+                update_event_status(
+                    db,
+                    event["id"],
+                    status="failed",
+                    error_class="conflict",
+                    error_message=outcome.error_message or "skipped",
+                )
+            result.per_repo.append(outcome)
+
+        return result
+
+    @staticmethod
+    def _rollback_one(
+        gh: RateLimitedClient,
+        repo_id: str,
+        *,
+        target_branch: str | None,
+        applied_rule_dict: dict[str, Any] | None,
+        prior_state_json: str | None,
+    ) -> RepoRollbackResult:
+        repo = gh.get_repo(repo_id)
+        branch_name = target_branch or repo.default_branch
+        branch_obj = gh.call(repo.get_branch, branch_name)
+
+        # --- drift check: current state must still match what we applied ---
+        current = None
+        if bool(getattr(branch_obj, "protected", False)):
+            try:
+                current = gh.call(branch_obj.get_protection)
+            except (UnknownObjectException, GithubException):
+                current = None
+        current_dict = (
+            _protection_to_rule_dict(current) if current is not None else None
+        )
+        if applied_rule_dict is not None and not _rule_dicts_equal(
+            current_dict, applied_rule_dict
+        ):
+            return RepoRollbackResult(
+                repo_id=repo_id,
+                status="skipped_dirty",
+                error_message=(
+                    "current protection has drifted from what tacon applied; "
+                    "refusing to overwrite. Inspect the repo and re-run rollback "
+                    "manually if you still want to revert."
+                ),
+            )
+
+        # --- restore: apply prior state, or remove protection if there was none ---
+        prior_state: dict[str, Any] | None = None
+        if prior_state_json:
+            try:
+                prior_state = json.loads(prior_state_json)
+            except json.JSONDecodeError:
+                return RepoRollbackResult(
+                    repo_id=repo_id,
+                    status="failed",
+                    error_message=f"prior_state_json is not valid JSON: {prior_state_json!r}",
+                )
+
+        if prior_state is None:
+            # Was unprotected before — remove the protection we set.
+            gh.call(branch_obj.remove_protection)
+        else:
+            prior_rule = from_dict(prior_state)
+            gh.call(branch_obj.edit_protection, **prior_rule.to_edit_protection_kwargs())
+
+        return RepoRollbackResult(repo_id=repo_id, status="rolled_back")
 
 
 def _format_protection(protection: object) -> tuple[str, str, bool, str]:
@@ -252,6 +521,117 @@ def _new_op_id() -> str:
     import uuid
 
     return str(uuid.uuid4())
+
+
+def _resolve_default_branch(db: Database, repo_id: str) -> str:
+    """Look up a repo's default_branch from the local DB. Falls back to 'main'."""
+    from sqlite_utils.db import Table
+
+    table = cast(Table, db.table("repos"))
+    row = next(
+        table.rows_where("id = ?", (repo_id,), select="default_branch", limit=1),
+        None,
+    )
+    if row is None:
+        return "main"
+    val = row.get("default_branch")
+    return str(val) if val else "main"
+
+
+def _protection_to_rule_dict(protection: object) -> dict[str, Any]:
+    """Snapshot a PyGithub Protection object in the BranchProtectionRule shape.
+
+    Fields the dataclass doesn't model are dropped — this is a v0.2 limitation
+    documented in plans/branch_protection_write.md.
+    """
+    out: dict[str, Any] = {
+        "required_approving_review_count": None,
+        "dismiss_stale_reviews": False,
+        "require_code_owner_reviews": False,
+        "required_status_checks": None,
+        "strict_status_checks": False,
+        "enforce_admins": False,
+        "allow_force_pushes": False,
+        "allow_deletions": False,
+        "required_linear_history": False,
+    }
+    pr_reviews = getattr(protection, "required_pull_request_reviews", None)
+    if pr_reviews is not None:
+        v = getattr(pr_reviews, "required_approving_review_count", None)
+        if v is not None:
+            out["required_approving_review_count"] = int(v)
+        out["dismiss_stale_reviews"] = bool(
+            getattr(pr_reviews, "dismiss_stale_reviews", False)
+        )
+        out["require_code_owner_reviews"] = bool(
+            getattr(pr_reviews, "require_code_owner_reviews", False)
+        )
+    sc = getattr(protection, "required_status_checks", None)
+    if sc is not None:
+        contexts = list(getattr(sc, "contexts", []) or [])
+        if contexts:
+            out["required_status_checks"] = contexts
+            out["strict_status_checks"] = bool(getattr(sc, "strict", False))
+    enforce = getattr(protection, "enforce_admins", None)
+    if enforce is not None:
+        out["enforce_admins"] = bool(getattr(enforce, "enabled", False))
+    out["allow_force_pushes"] = bool(getattr(protection, "allow_force_pushes", False))
+    out["allow_deletions"] = bool(getattr(protection, "allow_deletions", False))
+    out["required_linear_history"] = bool(
+        getattr(protection, "required_linear_history", False)
+    )
+    return out
+
+
+def _rule_dicts_equal(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
+    """Compare two rule-shaped dicts modulo list/tuple of contexts."""
+    if a is None or b is None:
+        return a is b  # both None -> True; one None -> False
+    a2 = dict(a)
+    b2 = dict(b)
+    # Normalize required_status_checks: None == [] (no requirement either way).
+    for d in (a2, b2):
+        v = d.get("required_status_checks")
+        if v is None or (isinstance(v, list) and len(v) == 0):
+            d["required_status_checks"] = None
+        elif isinstance(v, tuple):
+            d["required_status_checks"] = list(v)
+    return a2 == b2
+
+
+def _describe_rule(rule: BranchProtectionRule) -> str:
+    """One-line human description of a rule for plan summaries."""
+    bits: list[str] = []
+    if rule.required_approving_review_count is not None:
+        bits.append(f"{rule.required_approving_review_count} approval(s)")
+    if rule.dismiss_stale_reviews:
+        bits.append("dismiss-stale")
+    if rule.required_status_checks:
+        bits.append(f"{len(rule.required_status_checks)} status check(s)")
+    if rule.strict_status_checks:
+        bits.append("strict")
+    if rule.enforce_admins:
+        bits.append("admins enforced")
+    if rule.required_linear_history:
+        bits.append("linear-history")
+    return ", ".join(bits) if bits else "minimal protection"
+
+
+def _render_rule_diff(
+    current: dict[str, Any] | None, desired: dict[str, Any]
+) -> str:
+    """Render a synthetic before/after diff for the unified_diff field."""
+    lines = ["# branch protection diff"]
+    if current is None:
+        lines.append("# (currently unprotected)")
+    else:
+        lines.append("# current:")
+        for k, v in sorted(current.items()):
+            lines.append(f"# - {k}: {v!r}")
+    lines.append("# desired:")
+    for k, v in sorted(desired.items()):
+        lines.append(f"# + {k}: {v!r}")
+    return "\n".join(lines) + "\n"
 
 
 # Register on import so cli.run can find the class by name
