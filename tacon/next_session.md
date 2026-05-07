@@ -13,7 +13,7 @@ two parts you can't skip.
 
 ## -1 · What shipped after v0.1.0
 
-**Eleven commits since the v0.1.0 handoff** (`7c181e5`):
+**Sixteen commits since the v0.1.0 handoff** (`7c181e5`):
 
 | Commit | Item | What |
 |---|---|---|
@@ -28,29 +28,34 @@ two parts you can't skip.
 | `82c1174` | §4.2 | **CLI `--via-pr`** — flag added to `tacon run`; threaded into all four write ops; `add-branch-protection --via-pr` exits 2 with "read-only op" message. |
 | `5c75ffe` | §4.2 | **`tacon resume` for via-pr ops** — `_reconstruct_op` reads `via_pr` from the op_args dict (each op's `args` already includes it) and forwards to the constructor. Resume of a via-pr op gets a fresh op_id + fresh branch + fresh PR per replayed repo. |
 | `16d168b` | §4.2, docs | README documents `--via-pr`; new `tests/live/test_live_via_pr.py` exercises the full apply→PR→rollback round-trip against the real test repo with try/finally cleanup. |
+| `0276b73` | §4.7 | **Live e2e: DeleteFile direct-write** — seeds a tacon-marked file via the API, runs DeleteFile.plan→apply→verify gone→rollback→verify restored. Plus blocked-when-path-absent companion. |
+| `45d2587` | §4.7 | **Live e2e: DeleteFile `--via-pr`** — seeds on default, verifies file goes away on tacon branch but not on default + PR opens; rollback closes PR + deletes branch + leaves default untouched. |
+| `724039e` | §4.7 | **Live e2e: AddCIWorkflow direct + `--via-pr`** — two tests writing a unique tacon-marked workflow file under `.github/workflows/`. |
+| `10ed37e` | §4.7 | **Live e2e: FixCIWorkflow direct + `--via-pr`** — seeds workflow with `actions/checkout@v3`, bumps to v4 via `make_bump_action_transform`, verifies bump landed (or only on branch for via-pr), rolls back. |
+| `45731c0` | §4.7 | **Live e2e: AddBranchProtection survey** — read-only plan+apply against the test repo; verifies summary shape + event lands with status `reported`. |
 
-Three v0.2 items now shipped: §4.1 (resume), §4.2 (`--via-pr`), §4.5
-(PyPI prep). What's left is in §4 below.
+Four v0.2 items now shipped: §4.1 (resume), §4.2 (`--via-pr`), §4.5
+(PyPI prep), §4.7 (live e2e for the remaining ops). What's left is in §4 below.
 
 ---
 
 ## 0 · Orient yourself (5 min)
 
 ```bash
-cd /home/tzun/repos/gstack-test/tacon
+cd /home/tzun/repos/tacon/tacon
 git status --short                   # clean (or just .gitignored .env / .venv / dist)
-git log --oneline | head -5          # confirm 16d168b is the tip
-.venv/bin/pytest -q --no-cov         # 242 unit tests pass in ~25s
+git log --oneline | head -5          # confirm 45731c0 is the tip
+.venv/bin/pytest -q --no-cov         # 242 unit tests pass in ~17s
 .venv/bin/ruff check . && .venv/bin/mypy tacon   # both clean
 ```
 
 Expected:
-- `16d168b docs(tacon): README documents --via-pr; live e2e covers the via-pr path` is the tip of `main` and is pushed to `origin/main`.
-- 242 unit tests pass; 10 live tests pass **if the user's `.env` has
-  `TACON_LIVE=1`** (9 from v0.1 + the new via-pr live test). Live tests
-  hit the real GitHub API.
+- `45731c0 test(tacon): live e2e for AddBranchProtection read-only survey` is the tip of `main`.
+- 242 unit tests pass; **18 live tests** pass **if the user's `.env`
+  has `TACON_LIVE=1`** (10 from prior session + 8 new from §4.7). Live
+  tests hit the real GitHub API.
 - Coverage stays above 90% (gate). ruff + mypy clean across **16
-  source files** (was 15 before `_via_pr.py` landed).
+  source files**.
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -138,7 +143,7 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 **Modules starting with `_` are explicitly skipped** — that's why
 `_via_pr.py` is helpers, not an op.
 
-### Tests (tests/, 242 unit + ~10 live)
+### Tests (tests/, 242 unit + 18 live)
 
 - `tests/conftest.py` — `tmp_db`, `seed_repos`, `fake_repo`, `fake_gh`
 - `tests/test_db.py` — 18 tests (5 new for schema v2: fresh-build cols,
@@ -157,10 +162,15 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 - `tests/ops/test_fix_ci_workflow.py` — 23 tests (5 new for via-pr)
 - `tests/ops/test_add_branch_protection.py` — unchanged
 - `tests/ops/test_registry_discovery.py` — unchanged
-- `tests/live/` — opt-in live e2e:
+- `tests/live/` — opt-in live e2e (18 tests):
   - `test_live_read.py` (7 tests, read-only)
-  - `test_live_apply_rollback.py` (2 tests, write+rollback for AddFile direct)
-  - `test_live_via_pr.py` (1 test, via-pr round-trip — **NEW**)
+  - `test_live_apply_rollback.py` (2 tests, AddFile direct write+rollback)
+  - `test_live_via_pr.py` (1 test, AddFile via-pr round-trip)
+  - `test_live_delete_file.py` (2 tests, DeleteFile direct + blocked-when-absent)
+  - `test_live_delete_file_via_pr.py` (1 test, DeleteFile via-pr round-trip)
+  - `test_live_add_ci_workflow.py` (2 tests, AddCIWorkflow direct + via-pr)
+  - `test_live_fix_ci_workflow.py` (2 tests, FixCIWorkflow direct + via-pr)
+  - `test_live_add_branch_protection.py` (1 test, read-only survey)
 
 ### CLI surface (current)
 
@@ -276,7 +286,7 @@ add the columns on next `open_db`.
 
 ## 4 · v0.2 candidates (what's still on the table)
 
-In rough priority order. Three items already shipped (marked DONE).
+In rough priority order. Four items already shipped (marked DONE).
 
 ### 4.1 — Finish `tacon resume` properly (HIGH) ✅ DONE in `bc247dc`
 
@@ -331,18 +341,13 @@ One DB per classroom is fine for now. A `--classroom <id>` flag + a
 `~/.tacon/classes.toml` index can be added in a v0.2.x point release if
 any user actually has more than one.
 
-### 4.7 — Live e2e: more ops (LOW; partially done)
+### 4.7 — Live e2e: more ops (LOW) ✅ DONE in 5 commits
 
-Today's live tests: AddFile direct-write, AddFile via-pr. The other
-ops still mock-only at the live layer. Add live tests for:
-- `delete-file` (direct + via-pr)
-- `add-ci-workflow` (direct + via-pr)
-- `fix-ci-workflow` (direct + via-pr)
-- `add-branch-protection` (read-only survey only)
-
-Each follows the same shape as the existing tests: scope guard →
-preflight → apply → verify → rollback → verify clean. The new
-`test_live_via_pr.py` is a good template for the via-pr variants.
+Live coverage now exists for every write op (direct + via-pr) plus the
+read-only survey. Each test is self-cleaning via try/finally and uses
+unique tacon-marked paths/branches/workflow-names so reruns don't
+collide. The 7 read-only tests in `test_live_read.py` from v0.1.0 plus
+the 11 write+rollback tests from v0.2 give 18 live tests in total.
 
 ### 4.8 — Schema v2 column for FixCIWorkflow rollback latency (LOW)
 
@@ -472,10 +477,10 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 
 1. Run `pytest -q --no-cov`, `ruff check .`, `mypy tacon` to confirm
    nothing broke since the handoff. Expect **242 unit tests passing**
-   (+10 live if `TACON_LIVE=1`), ruff clean, mypy clean across **16
+   (+18 live if `TACON_LIVE=1`), ruff clean, mypy clean across **16
    source files**.
-2. Ask the user **which v0.2 item from §4** they want next. Three
-   already shipped (4.1, 4.2, 4.5). The remaining MEDIUM items
+2. Ask the user **which v0.2 item from §4** they want next. Four
+   already shipped (4.1, 4.2, 4.5, 4.7). The remaining MEDIUM items
    (§4.3 AddBranchProtection write mode, §4.4 dashboard `--publish`)
    both want a `/plan-eng-review` pass before coding.
 3. Use `/plan-eng-review` for non-trivial new modules; write the plan
