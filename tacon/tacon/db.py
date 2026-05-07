@@ -3,8 +3,10 @@
 The DB is the source of truth. Two consumers read it: the CLI/TUI for
 ops + status, and the dashboard renderer for the prof-facing site.
 
-Schema versioning lives in the `meta` table. v0.0.1 ships at
-schema_version=1.
+Schema versioning lives in the `meta` table. Migration history:
+  v1 (tacon 0.0.1) — initial schema.
+  v2 (tacon 0.2.0) — added events.pr_number + events.pr_branch for
+                     `--via-pr` mode. Fully nullable; v1 rows stay valid.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any, cast
 from sqlite_utils import Database
 from sqlite_utils.db import Table
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _t(db: Database, name: str) -> Table:
@@ -115,6 +117,8 @@ def init_db(db: Database) -> None:
                 "created_at": str,
                 "applied_at": str,
                 "rolled_back_at": str,
+                "pr_number": int,
+                "pr_branch": str,
             },
             pk="id",
             not_null={
@@ -139,7 +143,7 @@ def init_db(db: Database) -> None:
         _t(db, "events").create_index(["error_class"], if_not_exists=True)
 
     if "interactions" not in db.table_names():
-        # v2 surface; v0.0.1 ships table empty. Discord/email/issue ingestion writes here.
+        # Tacon v2.x surface (Discord/email/issue ingestion). Empty until then.
         _t(db, "interactions").create(
             {
                 "id": str,
@@ -153,6 +157,34 @@ def init_db(db: Database) -> None:
             pk="id",
             not_null={"id", "source", "source_ref", "created_at"},
             foreign_keys=[("student_id", "students", "id")],
+        )
+
+    _migrate_to_v2(db)
+
+
+def _migrate_to_v2(db: Database) -> None:
+    """v1 → v2 (schema): add events.pr_number + events.pr_branch.
+
+    Idempotent. Safe to re-run on a partially-migrated DB (e.g. crash
+    after add_column but before the meta-version bump): the cols-set
+    guard short-circuits. Fresh v2 DBs created via the events table
+    create above already have the columns; only the meta row needs
+    updating.
+
+    Note: ``meta.schema_version`` value writes are best-effort. The
+    existing v1 meta row was inserted at table-create time. Hand-rolled
+    DBs that lack the row at all are also handled (insert+replace).
+    """
+    cols = {c.name for c in _t(db, "events").columns}
+    if "pr_number" not in cols:
+        _t(db, "events").add_column("pr_number", int)
+    if "pr_branch" not in cols:
+        _t(db, "events").add_column("pr_branch", str)
+    if get_schema_version(db) < SCHEMA_VERSION:
+        _t(db, "meta").insert(
+            {"key": "schema_version", "value": str(SCHEMA_VERSION)},
+            pk="key",
+            replace=True,
         )
 
 
@@ -275,6 +307,8 @@ def insert_event(
     error_class: str | None = None,
     error_message: str | None = None,
     applied_at: str | None = None,
+    pr_number: int | None = None,
+    pr_branch: str | None = None,
 ) -> str:
     eid = new_uuid()
     _t(db, "events").insert(
@@ -294,6 +328,8 @@ def insert_event(
             "created_at": now_iso(),
             "applied_at": applied_at,
             "rolled_back_at": None,
+            "pr_number": pr_number,
+            "pr_branch": pr_branch,
         }
     )
     return eid

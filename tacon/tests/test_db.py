@@ -193,3 +193,145 @@ def test_get_op_class_for_op_id(tmp_db: Database, seed_repos) -> None:
     )
     assert get_op_class_for_op_id(tmp_db, "op-q") == "add_file"
     assert get_op_class_for_op_id(tmp_db, "op-missing") is None
+
+
+# ---------- schema v2 (events.pr_number / events.pr_branch) ----------
+
+
+def test_schema_v2_columns_present_on_fresh_db(tmp_path: Path) -> None:
+    """A new DB is built straight at v2: events table includes pr_number + pr_branch."""
+    db = open_db(tmp_path / "fresh.db")
+    cols = {c.name for c in db["events"].columns}
+    assert "pr_number" in cols
+    assert "pr_branch" in cols
+
+
+def test_insert_event_persists_pr_fields(tmp_db: Database, seed_repos) -> None:
+    """Direct-write events store NULL; via-pr events store the pr metadata."""
+    eid_direct = insert_event(
+        tmp_db,
+        op_id="op-direct",
+        op_class="add_file",
+        op_args_json='{"path":"X"}',
+        tacon_version="0.2.0",
+        repo_id="cs101/alice-hw3",
+        student_id="alice",
+        status="applied",
+    )
+    eid_pr = insert_event(
+        tmp_db,
+        op_id="op-pr",
+        op_class="add_file",
+        op_args_json='{"path":"Y","via_pr":true}',
+        tacon_version="0.2.0",
+        repo_id="cs101/bob-hw3",
+        student_id="bob",
+        status="applied",
+        pr_number=42,
+        pr_branch="tacon/add-file-deadbeef",
+    )
+    direct = tmp_db["events"].get(eid_direct)
+    via_pr = tmp_db["events"].get(eid_pr)
+    assert direct["pr_number"] is None
+    assert direct["pr_branch"] is None
+    assert via_pr["pr_number"] == 42
+    assert via_pr["pr_branch"] == "tacon/add-file-deadbeef"
+
+
+def test_v1_db_migrates_to_v2_in_place(tmp_path: Path) -> None:
+    """Open an old v1-shaped DB, run init_db, and confirm the migration adds the
+    pr columns + bumps schema_version without losing existing rows."""
+    p = tmp_path / "v1.db"
+    raw = Database(str(p))
+    # Hand-roll the v1 schema by approximating what tacon 0.1.x wrote: events
+    # table without pr_number/pr_branch + meta(schema_version=1).
+    raw["meta"].create({"key": str, "value": str}, pk="key")
+    raw["meta"].insert({"key": "schema_version", "value": "1"})
+    raw["events"].create(
+        {
+            "id": str,
+            "op_id": str,
+            "op_class": str,
+            "op_args_json": str,
+            "tacon_version": str,
+            "repo_id": str,
+            "student_id": str,
+            "status": str,
+            "commit_sha": str,
+            "applied_blob_sha": str,
+            "error_class": str,
+            "error_message": str,
+            "created_at": str,
+            "applied_at": str,
+            "rolled_back_at": str,
+        },
+        pk="id",
+    )
+    raw["events"].insert(
+        {
+            "id": "legacy-1",
+            "op_id": "old-op",
+            "op_class": "add_file",
+            "op_args_json": "{}",
+            "tacon_version": "0.1.0",
+            "repo_id": "cs101/alice-hw3",
+            "student_id": "alice",
+            "status": "applied",
+            "commit_sha": "deadbeef",
+            "applied_blob_sha": "blob1",
+            "error_class": None,
+            "error_message": None,
+            "created_at": "2026-05-01T00:00:00Z",
+            "applied_at": "2026-05-01T00:00:01Z",
+            "rolled_back_at": None,
+        }
+    )
+    raw.conn.close()
+
+    # Now open via tacon's open_db, which runs init_db (and the migration).
+    migrated = open_db(p)
+    cols = {c.name for c in migrated["events"].columns}
+    assert "pr_number" in cols
+    assert "pr_branch" in cols
+    assert get_schema_version(migrated) == SCHEMA_VERSION
+    legacy = migrated["events"].get("legacy-1")
+    assert legacy["status"] == "applied"
+    assert legacy["pr_number"] is None
+    assert legacy["pr_branch"] is None
+
+
+def test_migration_is_re_runnable(tmp_path: Path) -> None:
+    """Running open_db twice on a v2 DB is a no-op (idempotency)."""
+    p = tmp_path / "v2.db"
+    open_db(p)
+    db2 = open_db(p)  # second run
+    cols = {c.name for c in db2["events"].columns}
+    assert "pr_number" in cols
+    assert "pr_branch" in cols
+    assert get_schema_version(db2) == SCHEMA_VERSION
+    # meta has exactly one schema_version row
+    rows = list(db2["meta"].rows_where("key = ?", ("schema_version",)))
+    assert len(rows) == 1
+
+
+def test_migration_partial_state_recovers(tmp_path: Path) -> None:
+    """Crash scenario: pr_number was added but the meta row was never bumped.
+    The next init_db run should observe the columns exist + finish bumping.
+    """
+    p = tmp_path / "partial.db"
+    raw = Database(str(p))
+    raw["meta"].create({"key": str, "value": str}, pk="key")
+    raw["meta"].insert({"key": "schema_version", "value": "1"})
+    raw["events"].create(
+        {"id": str, "op_id": str, "op_class": str, "op_args_json": str,
+         "tacon_version": str, "repo_id": str, "student_id": str, "status": str,
+         "created_at": str, "pr_number": int},
+        pk="id",
+    )
+    raw.conn.close()
+
+    migrated = open_db(p)
+    cols = {c.name for c in migrated["events"].columns}
+    assert "pr_number" in cols
+    assert "pr_branch" in cols
+    assert get_schema_version(migrated) == SCHEMA_VERSION
