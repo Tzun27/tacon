@@ -83,30 +83,59 @@ write itself.
 - Rollback compares blob SHAs (not commit lineage) — tacon will never
   silently delete student work.
 
-## Scope (v0.1.0)
+## Scope
 
+v0.1.0:
 - ✅ `tacon sync` (gh classroom + CSV fallback)
 - ✅ `tacon run` for five ops (`add-file`, `delete-file`,
   `add-ci-workflow`, `fix-ci-workflow`, `add-branch-protection`)
 - ✅ `tacon rollback` (blob-SHA-safe)
-- ✅ `tacon resume` (retry only failed events; partial — see Limitations)
 - ✅ `tacon ui` (Textual TUI: ops on left, events on right)
 - ✅ `tacon dashboard --out` (static HTML)
-- 🚧 `tacon dashboard --publish` (push to gh-pages — coming in 0.1.x)
 
-## Limitations (v0.1.0)
+v0.2 (in progress):
+- ✅ `tacon resume` finishes its job: replays only the failed repos with
+  fresh op_id; original failed events get an audit-trail annotation.
+- ✅ `tacon run --via-pr` (described below) for branch-protected classrooms.
+- 🚧 `tacon dashboard --publish` (push to gh-pages).
+- 🚧 AddBranchProtection write mode.
 
-- Direct push to default branch only. Branch-protected classrooms will
-  see per-repo failures with `error_class='permission'`. PR-based mode
-  (`--via-pr`) lands in 0.2.x.
-- One classroom per DB. Multi-class config in 0.2.x.
-- `tacon resume` for `add-file` requires you to re-supply
-  `--content-from` (we don't store the raw bytes); it currently prints
-  the failed repo list and the manual workaround.
-- `add-branch-protection` is read-only. Write-mode requires admin token
-  and is planned for 0.2.x.
-- No live end-to-end test against api.github.com yet — all tests mock
-  PyGithub. Set up via `--live` pytest marker is on the roadmap.
+## `--via-pr` mode (branch-protected classrooms)
+
+By default, write ops push directly to each repo's default branch. If
+the classroom protects its default branch, you'll see per-repo failures
+with `error_class='permission'`. Pass `--via-pr` instead:
+
+```bash
+tacon run add-file --path STARTER.md --content-from ./fix.md --via-pr --apply
+```
+
+Per repo, `--via-pr`:
+
+1. Creates a branch named `tacon/<op-class>-<op-id-prefix>` at the
+   default branch's HEAD.
+2. Pushes the file change onto that branch.
+3. Opens a PR back into default. The TA reviews + merges.
+
+Each event row records `pr_number` + `pr_branch` (schema v2). Rollback
+auto-detects via-pr events and closes the PR + deletes the branch.
+**Already-merged PRs are not auto-reverted** — tacon marks them
+`skipped_dirty` and tells you to revert manually (auto-revert against
+default would require the very write-permission `--via-pr` exists to
+avoid).
+
+`--via-pr` does not apply to `add-branch-protection` (read-only); the
+CLI rejects it with exit code 2.
+
+## Limitations
+
+- One classroom per DB. Multi-class config is on the roadmap.
+- `add-branch-protection` is read-only. Write-mode requires an admin
+  token and is on the roadmap.
+- Live e2e tests cover AddFile (direct + via-pr); the other ops have
+  unit-test coverage only. Set `TACON_LIVE=1` in `.env` after
+  configuring `TACON_TEST_ORG` + `TACON_TEST_ASSIGNMENT_PREFIX` (see
+  `.env.example`) to run them.
 
 ## License
 
