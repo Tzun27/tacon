@@ -472,18 +472,21 @@ def test_resume_unknown_op_id_no_failed(seeded_db_path: Path) -> None:
     assert "No failed events" in result.stdout
 
 
-@patch("tacon.cli.RateLimitedClient")
-def test_resume_lists_failed_repos(
-    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock, tmp_path: Path
-) -> None:
-    """Apply that fails → resume prints the failed repos."""
-    mock_rl.return_value = fake_gh
+def _seed_failed_add_file(
+    *,
+    seeded_db_path: Path,
+    fake_gh: MagicMock,
+    fake_repo: MagicMock,
+    tmp_path: Path,
+    content: str = "x\n",
+) -> tuple[str, Path]:
+    """Run add-file once with create_file raising; return (op_id, content_file)."""
     fake_repo.get_contents.side_effect = _missing()
     fake_repo.create_file.side_effect = GithubException(
         422, {"message": "branch protection"}, {}
     )
     content_file = tmp_path / "X"
-    content_file.write_text("x\n")
+    content_file.write_text(content)
 
     apply_res = runner.invoke(
         app,
@@ -495,21 +498,296 @@ def test_resume_lists_failed_repos(
             "--db", str(seeded_db_path),
         ],
     )
-    assert apply_res.exit_code == 0
-    # All 3 should have failed, so we need a non-empty op_id
-    op_id = _extract_op_id(apply_res.stdout)
+    assert apply_res.exit_code == 0, (apply_res.stdout or "") + (apply_res.stderr or "")
     assert "3 failed" in apply_res.stdout
+    return _extract_op_id(apply_res.stdout), content_file
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_add_file_requires_content_from(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock, tmp_path: Path
+) -> None:
+    """resume without --content-from for an add-file op exits 2."""
+    mock_rl.return_value = fake_gh
+    op_id, _ = _seed_failed_add_file(
+        seeded_db_path=seeded_db_path, fake_gh=fake_gh, fake_repo=fake_repo, tmp_path=tmp_path
+    )
+    resume_res = runner.invoke(app, ["resume", op_id, "--db", str(seeded_db_path)])
+    assert resume_res.exit_code == 2
+    output = (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "requires --content-from" in output
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_add_file_content_length_mismatch_exits_2(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock, tmp_path: Path
+) -> None:
+    """resume with --content-from of a different byte length is rejected."""
+    mock_rl.return_value = fake_gh
+    op_id, _ = _seed_failed_add_file(
+        seeded_db_path=seeded_db_path, fake_gh=fake_gh, fake_repo=fake_repo, tmp_path=tmp_path,
+        content="x\n",  # 2 bytes
+    )
+    wrong = tmp_path / "WRONG"
+    wrong.write_text("xxxxxxx\n")  # 8 bytes
 
     resume_res = runner.invoke(
-        app, ["resume", op_id, "--db", str(seeded_db_path)]
+        app,
+        ["resume", op_id, "--content-from", str(wrong), "--db", str(seeded_db_path)],
     )
-    # resume currently exits 0 even though it prints the workaround hint
-    assert resume_res.exit_code == 0
+    assert resume_res.exit_code == 2
     output = (resume_res.stdout or "") + (resume_res.stderr or "")
-    assert "resume not yet wired" in output
-    # All 3 failed repos should appear
-    for username in ("alice", "bob", "carol"):
-        assert f"cs101/{username}-hw3" in output
+    assert "byte length" in output
+    assert "Wrong file?" in output
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_add_file_replays_failed_repos(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock, tmp_path: Path
+) -> None:
+    """Happy path: 3 failed → resume with correct content → 3 applied under a NEW op_id.
+
+    The original failed events get an error_message annotation pointing at the
+    resume op so the audit trail isn't ambiguous.
+    """
+    mock_rl.return_value = fake_gh
+    op_id, content_file = _seed_failed_add_file(
+        seeded_db_path=seeded_db_path, fake_gh=fake_gh, fake_repo=fake_repo, tmp_path=tmp_path,
+    )
+
+    # Now make the writes succeed for the resume run.
+    fake_repo.create_file.side_effect = None
+    fake_repo.create_file.return_value = {
+        "commit": _commit("c-resume"),
+        "content": _content_file("blob-resume"),
+    }
+
+    resume_res = runner.invoke(
+        app,
+        [
+            "resume", op_id,
+            "--content-from", str(content_file),
+            "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert resume_res.exit_code == 0, (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "3 applied" in resume_res.stdout
+    new_op_id = _extract_op_id(resume_res.stdout)
+    assert new_op_id != op_id
+
+    # Verify the original failed events were annotated with the resume op_id
+    db = open_db(seeded_db_path)
+    rows = list(db.query("SELECT error_message FROM events WHERE op_id = ?", (op_id,)))
+    assert rows, f"original op_id={op_id} has no events"
+    for row in rows:
+        assert f"resumed in op_id={new_op_id}" in (row["error_message"] or ""), row
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_delete_file_does_not_require_content_from(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """delete-file resume needs no --content-from (no content in op_args)."""
+    mock_rl.return_value = fake_gh
+    # Fail apply: get_contents returns the file, but delete_file raises
+    fake_repo.get_contents.return_value = _content_file("orig", b"x\ny\n")
+    fake_repo.delete_file.side_effect = GithubException(403, {"message": "forbidden"}, {})
+
+    apply_res = runner.invoke(
+        app,
+        [
+            "run", "delete-file",
+            "--path", "OLD.md",
+            "--apply", "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert apply_res.exit_code == 0, (apply_res.stdout or "") + (apply_res.stderr or "")
+    assert "3 failed" in apply_res.stdout
+    op_id = _extract_op_id(apply_res.stdout)
+
+    # Now let delete succeed
+    fake_repo.delete_file.side_effect = None
+    fake_repo.delete_file.return_value = {"commit": _commit("c-del")}
+
+    resume_res = runner.invoke(
+        app, ["resume", op_id, "--yes", "--db", str(seeded_db_path)]
+    )
+    assert resume_res.exit_code == 0, (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "3 applied" in resume_res.stdout
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_fix_ci_workflow_reconstructs_transform(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """fix-ci-workflow resume rebuilds the bump-action transform from transform_id."""
+    mock_rl.return_value = fake_gh
+    body = b"steps:\n  - uses: actions/checkout@v3\n"
+    fake_repo.get_contents.return_value = _content_file("orig", body)
+    fake_repo.update_file.side_effect = GithubException(422, {"message": "boom"}, {})
+
+    apply_res = runner.invoke(
+        app,
+        [
+            "run", "fix-ci-workflow",
+            "--workflow-name", "ci",
+            "--bump-action", "actions/checkout@v3=actions/checkout@v4",
+            "--apply", "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert apply_res.exit_code == 0, (apply_res.stdout or "") + (apply_res.stderr or "")
+    assert "3 failed" in apply_res.stdout
+    op_id = _extract_op_id(apply_res.stdout)
+
+    # Now let update succeed for the resume.
+    fake_repo.update_file.side_effect = None
+    fake_repo.update_file.return_value = {
+        "commit": _commit("c-fix"),
+        "content": _content_file("blob-fix", b"steps:\n  - uses: actions/checkout@v4\n"),
+    }
+
+    resume_res = runner.invoke(
+        app, ["resume", op_id, "--yes", "--db", str(seeded_db_path)]
+    )
+    assert resume_res.exit_code == 0, (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "3 applied" in resume_res.stdout
+
+
+def test_resume_fix_ci_workflow_unrecognized_transform_id_exits_2(
+    seeded_db_path: Path,
+) -> None:
+    """A synthetic event with a transform_id we can't reconstruct → exit 2."""
+    from tacon import __version__
+    from tacon.db import insert_event
+
+    db = open_db(seeded_db_path)
+    op_id = "synthetic-op-1"
+    insert_event(
+        db,
+        op_id=op_id,
+        op_class="fix_ci_workflow",
+        op_args_json='{"path": ".github/workflows/ci.yml", "workflow_name": "ci", '
+                     '"transform_id": "custom-rewriter v1", "message": "tacon: fix CI workflow", '
+                     '"assignment_id": null}',
+        tacon_version=__version__,
+        repo_id="cs101/alice-hw3",
+        student_id="alice",
+        status="failed",
+        error_message="seeded for resume reconstruction test",
+    )
+
+    resume_res = runner.invoke(app, ["resume", op_id, "--db", str(seeded_db_path)])
+    assert resume_res.exit_code == 2
+    output = (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "cannot reconstruct transform_id" in output
+
+
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_add_ci_workflow_replays_failed_repos(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock, tmp_path: Path
+) -> None:
+    """add-ci-workflow resume reads --content-from and rebuilds AddCIWorkflow."""
+    mock_rl.return_value = fake_gh
+    fake_repo.get_contents.side_effect = _missing()
+    fake_repo.create_file.side_effect = GithubException(422, {"message": "boom"}, {})
+    wf_file = tmp_path / "ci.yml"
+    wf_file.write_text(VALID_WORKFLOW_YAML)
+
+    apply_res = runner.invoke(
+        app,
+        [
+            "run", "add-ci-workflow",
+            "--workflow-name", "ci",
+            "--content-from", str(wf_file),
+            "--apply", "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert apply_res.exit_code == 0, (apply_res.stdout or "") + (apply_res.stderr or "")
+    assert "3 failed" in apply_res.stdout
+    op_id = _extract_op_id(apply_res.stdout)
+
+    fake_repo.create_file.side_effect = None
+    fake_repo.create_file.return_value = {
+        "commit": _commit("c-wf"),
+        "content": _content_file("blob-wf"),
+    }
+
+    resume_res = runner.invoke(
+        app,
+        [
+            "resume", op_id,
+            "--content-from", str(wf_file),
+            "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert resume_res.exit_code == 0, (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "3 applied" in resume_res.stdout
+
+
+def test_resume_add_branch_protection_branch_constructs(
+    seeded_db_path: Path,
+) -> None:
+    """The add_branch_protection branch in _reconstruct_op rebuilds AddBranchProtection.
+
+    Synthetic: the apply() path for AddBranchProtection never writes status='failed'
+    naturally, so we seed a failed event directly and check resume reconstructs the op.
+    The plan() call (which would hit GitHub) is short-circuited by archiving the repo.
+    """
+    from tacon import __version__
+    from tacon.db import archive_repo, insert_event
+
+    db = open_db(seeded_db_path)
+    op_id = "synthetic-bp-1"
+    insert_event(
+        db,
+        op_id=op_id,
+        op_class="add_branch_protection",
+        op_args_json='{"branch": "main", "assignment_id": null, "mode": "report"}',
+        tacon_version=__version__,
+        repo_id="cs101/alice-hw3",
+        student_id="alice",
+        status="failed",
+        error_message="seeded",
+    )
+    # Archive the only failed repo so plan() returns nothing for it -> resume hits
+    # the "no failed repos still active" branch (exercises lines 314-319 + the
+    # AddBranchProtection branch in _reconstruct_op).
+    archive_repo(db, "cs101/alice-hw3")
+
+    resume_res = runner.invoke(app, ["resume", op_id, "--db", str(seeded_db_path)])
+    assert resume_res.exit_code == 1
+    output = (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "no failed repos are still active" in output
+
+
+def test_resume_unknown_op_class_exits_1(seeded_db_path: Path) -> None:
+    """A synthetic event with an op_class no longer registered → exit 1."""
+    from tacon import __version__
+    from tacon.db import insert_event
+
+    db = open_db(seeded_db_path)
+    op_id = "synthetic-op-2"
+    insert_event(
+        db,
+        op_id=op_id,
+        op_class="ghost_op",
+        op_args_json='{"foo": "bar"}',
+        tacon_version=__version__,
+        repo_id="cs101/alice-hw3",
+        student_id="alice",
+        status="failed",
+        error_message="seeded",
+    )
+
+    resume_res = runner.invoke(app, ["resume", op_id, "--db", str(seeded_db_path)])
+    assert resume_res.exit_code == 1
+    output = (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "unknown op_class" in output
 
 
 # ---------- _make_confirm state machine ----------
@@ -583,14 +861,17 @@ def test_make_confirm_invalid_then_valid(monkeypatch) -> None:
 
 
 def _extract_op_id(output: str) -> str:
-    """Pull the op_id UUID out of the apply-result printout."""
+    """Pull the op_id UUID out of the apply-result printout.
+
+    Anchors on the `op_id:` label (printed by _print_apply_result) rather than
+    matching any UUID, because resume output also references the *original*
+    op_id earlier in the line, and we want the new one.
+    """
     import re
 
-    # Format: "op_id: <uuid>" — the bold tag may or may not be stripped depending
-    # on terminal width; CliRunner strips ANSI but not bold tags. Use a UUID regex.
     match = re.search(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        r"op_id:[^\n0-9a-f]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
         output,
     )
     assert match, f"no op_id found in output: {output[:300]}"
-    return match.group(0)
+    return match.group(1)

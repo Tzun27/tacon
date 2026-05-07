@@ -1,12 +1,8 @@
-"""tacon CLI: sync, run, rollback, resume. Dashboard + ui are stubs.
-
-Designed to be runnable today. The TUI (`ui`) and dashboard renderer
-(`dashboard`) print a "not implemented yet" message pointing to the
-design doc — they're scheduled for v0.1.x.
-"""
+"""tacon CLI: sync, run, rollback, resume, ui, dashboard, version."""
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Annotated
@@ -26,6 +22,7 @@ from tacon.db import (
     get_events_by_op,
     get_op_class_for_op_id,
     open_db,
+    update_event_status,
 )
 from tacon.github_client import RateLimitedClient
 from tacon.ops import ConfirmCallback, Op, RepoDiff, get_op_class, list_ops
@@ -271,11 +268,25 @@ def rollback(
 @app.command()
 def resume(
     op_id: Annotated[str, typer.Argument(help="op_id whose failed events should be retried.")],
+    content_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--content-from",
+            help="(add-file/add-ci-workflow) Local file whose content to re-push. "
+            "Must match the byte length recorded at original apply time.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip per-repo confirms.")] = False,
     rate: Annotated[float, typer.Option("--rate", help="Max API calls/sec.")] = 3.0,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
 ) -> None:
-    """Re-run apply for repos where the original op left status='failed'."""
+    """Re-run apply for repos where the original op left status='failed'.
+
+    Reconstructs the original op from `op_args_json` and replays it against
+    only the repos that previously failed. The replay is a brand-new op
+    (with its own op_id) — original failed events are kept for audit and
+    annotated with a pointer to the resume op_id.
+    """
     db = open_db(db_path or _default_db_path())
     failed = get_events_by_op(db, op_id, status="failed")
     if not failed:
@@ -287,21 +298,156 @@ def resume(
         err_console.print(f"No events found for op_id={op_id}")
         raise typer.Exit(1)
 
-    # Reconstruct the op from the stored args. For add_file we need content from a re-pass.
-    # v0.0.1: only add-file. We require the user to re-supply --content-from for safety
-    # (we don't store the raw content).
-    err_console.print(
-        "resume not yet wired for content reconstruction.\n"
-        f"Manual workaround: re-run `tacon run add-file --path <path> --content-from <file> --apply`\n"
-        f"and let it skip already-applied repos. Failed repos for op_id={op_id}:"
-    )
-    table = Table()
-    table.add_column("repo_id")
-    table.add_column("error_class")
-    table.add_column("error_message")
+    try:
+        args = json.loads(failed[0]["op_args_json"])
+    except json.JSONDecodeError as exc:
+        err_console.print(f"resume: malformed op_args_json on op {op_id}: {exc}")
+        raise typer.Exit(1) from exc
+
+    op = _reconstruct_op(op_class, args, content_from=content_from)
+
+    gh = RateLimitedClient(rate_per_sec=rate)
+    diff = op.plan(db, gh)
+
+    failed_repo_ids = {e["repo_id"] for e in failed}
+    diff.per_repo = [r for r in diff.per_repo if r.repo_id in failed_repo_ids]
+    if not diff.per_repo:
+        err_console.print(
+            f"resume: no failed repos are still active (all {len(failed_repo_ids)} archived "
+            f"or removed since op {op_id})."
+        )
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Resuming {len(diff.per_repo)} failed repo(s) from op {op_id}[/dim]")
+    _print_plan(diff)
+
+    confirm = _make_confirm(yes=yes)
+    result = op.apply(db, gh, diff, confirm)
+    _print_apply_result(result, op_id_label=True)
+    console.print(f"[dim]Resumed from op_id: {op_id}[/dim]")
+
+    # Annotate the original failed events so the audit trail points at the resume.
     for ev in failed:
-        table.add_row(ev["repo_id"], ev.get("error_class") or "", ev.get("error_message") or "")
-    console.print(table)
+        if ev["repo_id"] not in {r.repo_id for r in result.per_repo}:
+            continue
+        prior_msg = ev.get("error_message") or ""
+        suffix = f" (resumed in op_id={result.op_id})"
+        if suffix in prior_msg:
+            continue
+        update_event_status(
+            db,
+            ev["id"],
+            status="failed",
+            error_message=(prior_msg + suffix) if prior_msg else suffix.lstrip(),
+        )
+
+
+def _reconstruct_op(
+    op_class: str, args: dict[str, object], *, content_from: Path | None
+) -> Op:
+    """Rebuild an Op instance from stored op_args_json + (optional) content file.
+
+    Used by `tacon resume`. Each branch mirrors the constructor call in `run`,
+    sourcing every parameter except content from `args`.
+    """
+    if op_class == "add_file":
+        content = _require_content_from(content_from, op_class, args)
+        return AddFile(
+            path=str(args["path"]),
+            content=content,
+            message=str(args.get("message") or "tacon: add file"),
+            assignment_id=_opt_str(args.get("assignment_id")),
+        )
+    if op_class == "delete_file":
+        return DeleteFile(
+            path=str(args["path"]),
+            message=str(args.get("message") or "tacon: delete file"),
+            assignment_id=_opt_str(args.get("assignment_id")),
+        )
+    if op_class == "add_ci_workflow":
+        content = _require_content_from(content_from, op_class, args)
+        # path is .github/workflows/<name>(.yml|.yaml); strip the directory
+        # prefix and let AddCIWorkflow handle the extension.
+        path = str(args["path"])
+        prefix = ".github/workflows/"
+        name = path[len(prefix):] if path.startswith(prefix) else path
+        try:
+            return AddCIWorkflow(
+                name=name,
+                content=content,
+                message=_opt_str(args.get("message")),
+                assignment_id=_opt_str(args.get("assignment_id")),
+            )
+        except WorkflowValidationError as exc:
+            err_console.print(f"resume: stored workflow content failed validation: {exc}")
+            raise typer.Exit(2) from exc
+    if op_class == "fix_ci_workflow":
+        transform_id = str(args.get("transform_id") or "")
+        prefix = "bump-action "
+        if not transform_id.startswith(prefix) or "->" not in transform_id:
+            err_console.print(
+                f"resume: cannot reconstruct transform_id={transform_id!r}. "
+                "Only `bump-action <from>-><to>` is supported by `tacon resume`. "
+                "Re-run via `tacon run fix-ci-workflow ...` if you used a custom transform."
+            )
+            raise typer.Exit(2)
+        from_ref, to_ref = transform_id[len(prefix):].split("->", 1)
+        try:
+            transform = make_bump_action_transform(from_ref, to_ref)
+        except ValueError as exc:
+            err_console.print(f"resume: {exc}")
+            raise typer.Exit(2) from exc
+        return FixCIWorkflow(
+            name=str(args["workflow_name"]),
+            transform=transform,
+            transform_id=transform_id,
+            message=str(args.get("message") or "tacon: fix CI workflow"),
+            assignment_id=_opt_str(args.get("assignment_id")),
+        )
+    if op_class == "add_branch_protection":
+        return AddBranchProtection(
+            branch=_opt_str(args.get("branch")),
+            assignment_id=_opt_str(args.get("assignment_id")),
+        )
+
+    err_console.print(f"resume: unknown op_class '{op_class}'.")
+    raise typer.Exit(1)
+
+
+def _require_content_from(
+    content_from: Path | None, op_class: str, args: dict[str, object]
+) -> str:
+    """Read --content-from and verify byte length matches the recorded content_len.
+
+    The original AddFile-family ops only store `content_len` in op_args, not the
+    bytes themselves (intentional, to keep events small). On resume we trust the
+    user to supply the same file; the byte-length check catches the obvious
+    "wrong file" mistake without needing a hash.
+    """
+    if content_from is None:
+        err_console.print(
+            f"resume: {op_class} requires --content-from <file> "
+            "(original content is not stored in the events table)."
+        )
+        raise typer.Exit(2)
+    content = content_from.read_text(encoding="utf-8")
+    expected = args.get("content_len")
+    if isinstance(expected, int):
+        actual = len(content.encode("utf-8"))
+        if actual != expected:
+            err_console.print(
+                f"resume: --content-from byte length {actual} does not match "
+                f"original content_len {expected} from op_args. Wrong file?"
+            )
+            raise typer.Exit(2)
+    return content
+
+
+def _opt_str(value: object) -> str | None:
+    """Coerce a JSON-loaded field to Optional[str], preserving None."""
+    if value is None:
+        return None
+    return str(value)
 
 
 # ---------- ui / dashboard stubs ----------
