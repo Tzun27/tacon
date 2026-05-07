@@ -335,3 +335,147 @@ def test_migration_partial_state_recovers(tmp_path: Path) -> None:
     assert "pr_number" in cols
     assert "pr_branch" in cols
     assert get_schema_version(migrated) == SCHEMA_VERSION
+
+
+# ---------- schema v3 (events.prior_state_json) ----------
+
+
+def test_schema_v3_column_present_on_fresh_db(tmp_path: Path) -> None:
+    """A new DB is built straight at v3: events table includes prior_state_json."""
+    db = open_db(tmp_path / "fresh.db")
+    cols = {c.name for c in db["events"].columns}
+    assert "prior_state_json" in cols
+
+
+def test_insert_event_persists_prior_state_json(
+    tmp_db: Database, seed_repos
+) -> None:
+    """Survey events leave prior_state_json NULL; admin-write events store JSON."""
+    eid_survey = insert_event(
+        tmp_db,
+        op_id="op-survey",
+        op_class="add_branch_protection",
+        op_args_json='{"branch":"main"}',
+        tacon_version="0.2.0",
+        repo_id="cs101/alice-hw3",
+        student_id="alice",
+        status="reported",
+    )
+    eid_write = insert_event(
+        tmp_db,
+        op_id="op-write",
+        op_class="add_branch_protection",
+        op_args_json='{"branch":"main","rule":{"required_approving_review_count":1}}',
+        tacon_version="0.2.0",
+        repo_id="cs101/bob-hw3",
+        student_id="bob",
+        status="applied",
+        prior_state_json='{"required_approving_review_count":2,"enforce_admins":true}',
+    )
+    survey = tmp_db["events"].get(eid_survey)
+    write = tmp_db["events"].get(eid_write)
+    assert survey["prior_state_json"] is None
+    assert write["prior_state_json"] == (
+        '{"required_approving_review_count":2,"enforce_admins":true}'
+    )
+
+
+def test_v2_db_migrates_to_v3_in_place(tmp_path: Path) -> None:
+    """Open a v2-shaped DB, run init_db, confirm prior_state_json is added
+    and the schema version bumps without touching existing rows."""
+    p = tmp_path / "v2.db"
+    raw = Database(str(p))
+    raw["meta"].create({"key": str, "value": str}, pk="key")
+    raw["meta"].insert({"key": "schema_version", "value": "2"})
+    # v2 events table — has pr_number/pr_branch but NOT prior_state_json.
+    raw["events"].create(
+        {
+            "id": str,
+            "op_id": str,
+            "op_class": str,
+            "op_args_json": str,
+            "tacon_version": str,
+            "repo_id": str,
+            "student_id": str,
+            "status": str,
+            "commit_sha": str,
+            "applied_blob_sha": str,
+            "error_class": str,
+            "error_message": str,
+            "created_at": str,
+            "applied_at": str,
+            "rolled_back_at": str,
+            "pr_number": int,
+            "pr_branch": str,
+        },
+        pk="id",
+    )
+    raw["events"].insert(
+        {
+            "id": "v2-row",
+            "op_id": "old-op",
+            "op_class": "add_file",
+            "op_args_json": "{}",
+            "tacon_version": "0.2.0",
+            "repo_id": "cs101/alice-hw3",
+            "student_id": "alice",
+            "status": "applied",
+            "commit_sha": "deadbeef",
+            "applied_blob_sha": "blob1",
+            "error_class": None,
+            "error_message": None,
+            "created_at": "2026-05-06T00:00:00Z",
+            "applied_at": "2026-05-06T00:00:01Z",
+            "rolled_back_at": None,
+            "pr_number": None,
+            "pr_branch": None,
+        }
+    )
+    raw.conn.close()
+
+    migrated = open_db(p)
+    cols = {c.name for c in migrated["events"].columns}
+    assert "prior_state_json" in cols
+    assert get_schema_version(migrated) == SCHEMA_VERSION
+    legacy = migrated["events"].get("v2-row")
+    assert legacy["status"] == "applied"
+    assert legacy["pr_number"] is None
+    assert legacy["prior_state_json"] is None
+
+
+def test_v3_migration_is_re_runnable(tmp_path: Path) -> None:
+    """Running open_db twice on a v3 DB is a no-op."""
+    p = tmp_path / "v3.db"
+    open_db(p)
+    db2 = open_db(p)
+    cols = {c.name for c in db2["events"].columns}
+    assert "prior_state_json" in cols
+    assert get_schema_version(db2) == SCHEMA_VERSION
+    rows = list(db2["meta"].rows_where("key = ?", ("schema_version",)))
+    assert len(rows) == 1
+    assert rows[0]["value"] == str(SCHEMA_VERSION)
+
+
+def test_v3_partial_state_recovers(tmp_path: Path) -> None:
+    """prior_state_json was added but meta wasn't bumped past v2.
+    Next open_db should observe the column + finish bumping."""
+    p = tmp_path / "v3-partial.db"
+    raw = Database(str(p))
+    raw["meta"].create({"key": str, "value": str}, pk="key")
+    raw["meta"].insert({"key": "schema_version", "value": "2"})
+    raw["events"].create(
+        {
+            "id": str, "op_id": str, "op_class": str, "op_args_json": str,
+            "tacon_version": str, "repo_id": str, "student_id": str,
+            "status": str, "created_at": str,
+            "pr_number": int, "pr_branch": str,
+            "prior_state_json": str,
+        },
+        pk="id",
+    )
+    raw.conn.close()
+
+    migrated = open_db(p)
+    cols = {c.name for c in migrated["events"].columns}
+    assert "prior_state_json" in cols
+    assert get_schema_version(migrated) == SCHEMA_VERSION

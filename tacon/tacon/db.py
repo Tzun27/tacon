@@ -7,6 +7,9 @@ Schema versioning lives in the `meta` table. Migration history:
   v1 (tacon 0.0.1) — initial schema.
   v2 (tacon 0.2.0) — added events.pr_number + events.pr_branch for
                      `--via-pr` mode. Fully nullable; v1 rows stay valid.
+  v3 (tacon 0.2.0) — added events.prior_state_json for snapshot+restore
+                     rollback of admin ops (AddBranchProtection write
+                     mode). Nullable; pre-v3 rows stay valid.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from typing import Any, cast
 from sqlite_utils import Database
 from sqlite_utils.db import Table
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _t(db: Database, name: str) -> Table:
@@ -119,6 +122,7 @@ def init_db(db: Database) -> None:
                 "rolled_back_at": str,
                 "pr_number": int,
                 "pr_branch": str,
+                "prior_state_json": str,
             },
             pk="id",
             not_null={
@@ -160,6 +164,7 @@ def init_db(db: Database) -> None:
         )
 
     _migrate_to_v2(db)
+    _migrate_to_v3(db)
 
 
 def _migrate_to_v2(db: Database) -> None:
@@ -180,6 +185,23 @@ def _migrate_to_v2(db: Database) -> None:
         _t(db, "events").add_column("pr_number", int)
     if "pr_branch" not in cols:
         _t(db, "events").add_column("pr_branch", str)
+    # NOTE: don't write the meta row here — _migrate_to_v3 owns the bump
+    # to the current SCHEMA_VERSION. If we wrote "2" here on a fresh-build
+    # of v3, then the v3 migration's get_schema_version check would still
+    # pass (3 > 2 -> bumps), so the order is correct, but skipping the
+    # write keeps each migration responsible only for its own col adds.
+
+
+def _migrate_to_v3(db: Database) -> None:
+    """v2 → v3 (schema): add events.prior_state_json.
+
+    Used by AddBranchProtection write mode to snapshot the prior
+    protection state at apply time so rollback can restore it. Idempotent
+    via the cols-set guard, exactly like _migrate_to_v2.
+    """
+    cols = {c.name for c in _t(db, "events").columns}
+    if "prior_state_json" not in cols:
+        _t(db, "events").add_column("prior_state_json", str)
     if get_schema_version(db) < SCHEMA_VERSION:
         _t(db, "meta").insert(
             {"key": "schema_version", "value": str(SCHEMA_VERSION)},
@@ -309,6 +331,7 @@ def insert_event(
     applied_at: str | None = None,
     pr_number: int | None = None,
     pr_branch: str | None = None,
+    prior_state_json: str | None = None,
 ) -> str:
     eid = new_uuid()
     _t(db, "events").insert(
@@ -330,6 +353,7 @@ def insert_event(
             "rolled_back_at": None,
             "pr_number": pr_number,
             "pr_branch": pr_branch,
+            "prior_state_json": prior_state_json,
         }
     )
     return eid
@@ -348,6 +372,7 @@ def update_event_status(
     rolled_back_at: str | None = None,
     pr_number: int | None = None,
     pr_branch: str | None = None,
+    prior_state_json: str | None = None,
 ) -> None:
     updates: dict[str, Any] = {"status": status}
     if commit_sha is not None:
@@ -366,6 +391,8 @@ def update_event_status(
         updates["pr_number"] = pr_number
     if pr_branch is not None:
         updates["pr_branch"] = pr_branch
+    if prior_state_json is not None:
+        updates["prior_state_json"] = prior_state_json
     _t(db, "events").update(event_id, updates)
 
 
