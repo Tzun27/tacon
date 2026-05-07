@@ -240,3 +240,38 @@ def test_list_bundled_templates_returns_list_or_empty() -> None:
     assert isinstance(out, list)
     assert all(isinstance(name, str) for name in out)
     assert out == sorted(out)
+
+
+# ---------- bundled templates (tacon-default, strict-pr) ----------
+
+
+def test_bundled_template_tacon_default_loads() -> None:
+    """tacon-default ships with the package and parses to a sensible rule."""
+    r = load_rule_template("tacon-default")
+    assert r.required_approving_review_count == 1
+    assert r.dismiss_stale_reviews is True
+    assert r.required_status_checks is None
+    assert r.enforce_admins is False
+    assert r.required_linear_history is False
+
+
+def test_bundled_template_strict_pr_loads() -> None:
+    """strict-pr is the heavier preset: 2 reviews, admins bound, linear history."""
+    r = load_rule_template("strict-pr")
+    assert r.required_approving_review_count == 2
+    assert r.dismiss_stale_reviews is True
+    assert r.enforce_admins is True
+    assert r.required_linear_history is True
+
+
+def test_list_bundled_templates_includes_both() -> None:
+    out = list_bundled_templates()
+    assert "tacon-default" in out
+    assert "strict-pr" in out
+
+
+def test_load_rule_template_missing_lists_bundled_names() -> None:
+    """The error names the available templates so the user can fix the typo."""
+    with pytest.raises(RuleValidationError, match="tacon-default") as exc:
+        load_rule_template("does-not-exist-yo")
+    assert "strict-pr" in str(exc.value)
