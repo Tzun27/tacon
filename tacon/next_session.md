@@ -1,26 +1,36 @@
-# Next session — pick up tacon mid-v0.2
+# Next session — pick up tacon mid-v0.2 (after `--via-pr`)
 
 You (the next agent) are continuing work on **tacon**, a TA workbench for
-GitHub Classroom. v0.1.0 shipped + two v0.2 items shipped on top
-(see §-1). The remaining HIGH-priority v0.2 work needs design input from
-the user — that's why this session paused.
+GitHub Classroom. v0.1.0 shipped + three v0.2 items shipped on top
+(see §-1). What's left for v0.2 either needs design input from the user
+or is genuinely lower priority — that's why this session paused.
 
-This file is your handoff. Read it top-to-bottom before doing anything else.
+This file is your handoff. **Read it top-to-bottom before doing anything
+else.** §-1 (what shipped this session) and §4 (what's left) are the
+two parts you can't skip.
 
 ---
 
-## -1 · What shipped after v0.1.0 (this session)
+## -1 · What shipped after v0.1.0
 
-Two commits on top of `7c181e5` (the v0.1.0 handoff doc):
+**Eleven commits since the v0.1.0 handoff** (`7c181e5`):
 
-| Commit | What |
-|---|---|
-| `bc247dc` | **§4.1 done.** `tacon resume` finished. Reconstructs the op from `op_args_json`, replays apply on only the originally-failed repos, gets a fresh op_id, annotates the original failed events with `(resumed in op_id=Y)`. add-file/add-ci-workflow require `--content-from`; reject byte-length mismatches. fix-ci-workflow re-derives the bump-action transform from `transform_id`. delete-file and add-branch-protection need no extra flags. 8 new resume tests; 197 unit tests passing; coverage 94.47%. |
-| `7db9398` | **§4.5 partial.** Smoke-tested PyPI publish prep: `python -m build` produces clean wheel + sdist, dashboard templates land in `tacon/dashboard/templates/`, console-script `tacon` resolves, `tacon dashboard --out` renders cleanly from a fresh-venv install. **Found+fixed:** `pip install 'tacon[tui]'` was being mangled by rich (it parsed `[tui]` as a malformed style tag and stripped it). Bracket now escaped. The user still does `twine upload` themselves — nothing pushed to PyPI. |
+| Commit | Item | What |
+|---|---|---|
+| `bc247dc` | §4.1 | `tacon resume` finished. Reconstructs the op from `op_args_json`, replays apply on only the originally-failed repos, gets a fresh op_id, annotates the original failed events with `(resumed in op_id=Y)`. add-file/add-ci-workflow require `--content-from`; reject byte-length mismatches. fix-ci-workflow re-derives the bump-action transform from `transform_id`. delete-file and add-branch-protection need no extra flags. |
+| `7db9398` | §4.5 | PyPI publish prep: `python -m build` produces a clean wheel + sdist, dashboard templates land in `tacon/dashboard/templates/`, console-script `tacon` resolves, `tacon dashboard --out` renders cleanly from a fresh-venv install. **Bug found+fixed:** `pip install 'tacon[tui]'` was being mangled by rich (it parsed `[tui]` as a malformed style tag and stripped it). Bracket now escaped. |
+| `75bc0a2` | docs | Refreshed this handoff doc for the resume + PyPI prep work. |
+| `04067fe` | §4.2 | **Schema v2** — added `events.pr_number` + `events.pr_branch` columns. Idempotent migration in `init_db._migrate_to_v2` with cols-set guard so partial-state recovery just works. |
+| `7e6537a` | §4.2 | **`tacon/ops/_via_pr.py`** — branch + PR helpers. `via_pr_branch_name`, `ensure_branch` (raises `BranchConflictError` on different-SHA), `open_or_find_pr` (recovers existing PR on 422), `close_pr_and_delete_branch` (returns `RollbackOutcome` with merged-PR → `skipped_dirty`). `_` prefix excludes from auto-discovery. |
+| `7ba028f` | §4.2 | **AddFile `--via-pr`** — apply + rollback. New `Op.supports_via_pr: bool` ABC flag (True on AddFile/DeleteFile/AddCIWorkflow/FixCIWorkflow; False on AddBranchProtection). `update_event_status` and `insert_event` gained `pr_number`/`pr_branch` kwargs. |
+| `19eee55` | §4.2 | **DeleteFile `--via-pr`** — same shape as AddFile; `_delete` accepts `branch=` kwarg. |
+| `eafb429` | §4.2 | **AddCIWorkflow + FixCIWorkflow `--via-pr`** — AddCIWorkflow inherits AddFile's via-pr machinery wholesale (just forwards `via_pr` through `__init__`). FixCIWorkflow has its own apply path; `_patch` accepts `branch=` kwarg, `_apply_via_pr` orchestrates branch+patch+PR. |
+| `82c1174` | §4.2 | **CLI `--via-pr`** — flag added to `tacon run`; threaded into all four write ops; `add-branch-protection --via-pr` exits 2 with "read-only op" message. |
+| `5c75ffe` | §4.2 | **`tacon resume` for via-pr ops** — `_reconstruct_op` reads `via_pr` from the op_args dict (each op's `args` already includes it) and forwards to the constructor. Resume of a via-pr op gets a fresh op_id + fresh branch + fresh PR per replayed repo. |
+| `16d168b` | §4.2, docs | README documents `--via-pr`; new `tests/live/test_live_via_pr.py` exercises the full apply→PR→rollback round-trip against the real test repo with try/finally cleanup. |
 
-What's left for v0.2 — see §4. The remaining HIGH item (§4.2 `--via-pr`)
-explicitly says to spec with `/plan-eng-review` first, so this session
-stopped here.
+Three v0.2 items now shipped: §4.1 (resume), §4.2 (`--via-pr`), §4.5
+(PyPI prep). What's left is in §4 below.
 
 ---
 
@@ -28,273 +38,334 @@ stopped here.
 
 ```bash
 cd /home/tzun/repos/gstack-test/tacon
-git status --short                # should be clean (or just .gitignored .env / .venv / dist)
-git log --oneline | head -5       # confirm 7db9398 is the tip
-.venv/bin/pytest -q --no-cov      # 197 unit tests pass in ~20s; +6 live tests if TACON_LIVE=1
+git status --short                   # clean (or just .gitignored .env / .venv / dist)
+git log --oneline | head -5          # confirm 16d168b is the tip
+.venv/bin/pytest -q --no-cov         # 242 unit tests pass in ~25s
 .venv/bin/ruff check . && .venv/bin/mypy tacon   # both clean
 ```
 
 Expected:
-- `7db9398 fix(tacon): escape [tui] in TUI-missing install hint …` is the tip of `main`.
-- 197 unit tests pass; 9 live tests pass **if the user's `.env` has
-  `TACON_LIVE=1`** (it does as of v0.1.0). Live tests hit the real
-  GitHub API.
-- Coverage 94.47% (gate 90%). ruff + mypy clean across 15 source files.
-
-> **Drift caught last session:** the venv had lost its dev extras
-> (`textual`, `pytest-asyncio`, `types-pyyaml`). If pytest collection
-> fails with `ModuleNotFoundError: No module named 'textual'`, run
-> `.venv/bin/pip install -e ".[dev]"` and try again.
+- `16d168b docs(tacon): README documents --via-pr; live e2e covers the via-pr path` is the tip of `main` and is pushed to `origin/main`.
+- 242 unit tests pass; 10 live tests pass **if the user's `.env` has
+  `TACON_LIVE=1`** (9 from v0.1 + the new via-pr live test). Live tests
+  hit the real GitHub API.
+- Coverage stays above 90% (gate). ruff + mypy clean across **16
+  source files** (was 15 before `_via_pr.py` landed).
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
 
-> **HEADS-UP about the live tests.** The user's `.env` is configured to run
-> live tests on every full `pytest` invocation. Each run does a real
-> apply+rollback on `Netdb-NCKU/pre-test-hw-Tzun27`, leaving two commits
-> in that repo's history (an apply commit and a revert commit) that **do
-> not** get garbage-collected. The file tree is left clean. If the user
-> doesn't want this, flip `TACON_LIVE=0` in `.env` (gitignored — safe to
-> tell them how to edit it but **never read or echo its contents** since
-> it has the token).
+> **Drift caught last session:** the venv had lost its dev extras
+> (`textual`, `pytest-asyncio`, `types-pyyaml`) and even the editable
+> install was at the old `tacon 0.0.1` version. If pytest collection
+> fails with `ModuleNotFoundError: No module named 'textual'`, run
+> `.venv/bin/pip install -e ".[dev]"` to fix.
+
+> **HEADS-UP about live tests + the test repo's history.** When
+> `TACON_LIVE=1` (the user's `.env` typically has this), every full
+> pytest run does:
+> - One **direct-write** apply+rollback on `Netdb-NCKU/pre-test-hw-Tzun27`
+>   → leaves an apply commit + revert commit pair on `main`.
+> - One **via-pr** apply+rollback (new this session) → opens a PR,
+>   closes it (not merged), deletes the tacon branch. The closed PR
+>   stays in the repo's PR history; the branch is gone.
+>
+> If the user doesn't want the noise, flip `TACON_LIVE=0` in
+> `tacon/.env` (gitignored — safe to tell them how to edit it but
+> **never read or echo its contents** since it has the token).
 
 ---
 
-## 1 · What exists at v0.1.0 (don't rebuild)
+## 1 · What exists right now (don't rebuild)
 
 ### Code (tacon/)
 
 ```
 tacon/
 ├── __init__.py                       __version__ = "0.1.0"
-├── cli.py                            Typer app: sync, run, rollback, resume,
+├── cli.py                            Typer app: sync, run (+ --via-pr),
+│                                     rollback, resume (+ --content-from),
 │                                     ui, dashboard, version
 ├── classroom.py                      gh classroom + CSV roster discovery
 ├── db.py                             SQLite: assignments, students, repos,
-│                                     events, interactions, meta (schema v1)
+│                                     events, interactions, meta
+│                                     SCHEMA_VERSION = 2 (events.pr_number
+│                                     + pr_branch added; idempotent migration
+│                                     in `_migrate_to_v2`)
 ├── github_client.py                  RateLimitedClient (Auth.Token) + 8-class
 │                                     classify_error() + retry-after parsing
 ├── ops/
 │   ├── __init__.py                   Op ABC + 6 dataclasses + lazy
-│   │                                 pkgutil-based registry auto-discovery
-│   ├── add_file.py                   AddFile (subclass-friendly: op_class_name
-│   │                                 + default_revert_message class attrs)
-│   ├── delete_file.py                DeleteFile (rollback restores from
-│   │                                 git blob via repo.get_git_blob)
+│   │                                 pkgutil-based registry auto-discovery.
+│   │                                 New: `Op.supports_via_pr: bool` flag.
+│   ├── _via_pr.py                    Branch + PR helpers (NEW v0.2). The `_`
+│   │                                 prefix excludes from auto-discovery.
+│   │                                 Exports: via_pr_branch_name,
+│   │                                 ensure_branch (raises BranchConflictError),
+│   │                                 open_or_find_pr (idempotent on 422),
+│   │                                 close_pr_and_delete_branch (returns
+│   │                                 RollbackOutcome).
+│   ├── add_file.py                   AddFile (supports_via_pr=True). Has
+│   │                                 _ApplyOutcome dataclass, _apply_via_pr,
+│   │                                 _rollback_via_pr; _push_file accepts
+│   │                                 branch= kwarg.
+│   ├── delete_file.py                DeleteFile (supports_via_pr=True). Same
+│   │                                 shape: _apply_via_pr, _rollback_via_pr;
+│   │                                 _delete accepts branch= kwarg.
 │   ├── add_ci_workflow.py            AddCIWorkflow (subclasses AddFile;
-│   │                                 YAML validation + workflow-aware diff)
-│   ├── fix_ci_workflow.py            FixCIWorkflow (transform-based patching;
-│   │                                 rollback via apply commit's parent;
-│   │                                 ships make_bump_action_transform)
-│   └── add_branch_protection.py      Read-only survey (supports_rollback=False;
-│                                     writes status='reported' events)
+│   │                                 inherits via-pr wholesale; just
+│   │                                 forwards via_pr through __init__).
+│   ├── fix_ci_workflow.py            FixCIWorkflow (supports_via_pr=True).
+│   │                                 Own apply path; _patch accepts branch=,
+│   │                                 _apply_via_pr orchestrates,
+│   │                                 _rollback_via_pr handles.
+│   └── add_branch_protection.py      Read-only survey
+│                                     (supports_rollback=False,
+│                                      supports_via_pr=False).
 ├── dashboard/
 │   ├── __init__.py                   re-exports render
-│   ├── render.py                     Jinja2 → static HTML; reads events +
-│   │                                 repos + students; builds repos×ops grid
+│   ├── render.py                     Jinja2 → static HTML
 │   └── templates/
 │       ├── base.html, index.html, op.html, repo.html
 └── tui/
     ├── __init__.py                   re-exports TaconApp
-    └── app.py                        Textual: ops pane + events pane;
-                                      keybindings q/r/esc; last_status attr
-                                      for tests
+    └── app.py                        Textual TUI
 ```
 
 Five ops registered: `add-file`, `delete-file`, `add-ci-workflow`,
-`fix-ci-workflow`, `add-branch-protection`. Auto-discovered on first
-`list_ops()` / `get_op_class()` call — drop a new file in `tacon/ops/` and
-it appears automatically (must call `register("name", Cls)` at the bottom).
+`fix-ci-workflow`, `add-branch-protection`. Auto-discovered (drop a new
+file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
+**Modules starting with `_` are explicitly skipped** — that's why
+`_via_pr.py` is helpers, not an op.
 
-### Tests (tests/, 198 passing)
+### Tests (tests/, 242 unit + ~10 live)
 
 - `tests/conftest.py` — `tmp_db`, `seed_repos`, `fake_repo`, `fake_gh`
-- `tests/test_db.py` — 13 schema/upsert/event tests
-- `tests/test_github_client.py` — 43 tests: classify_error matrix, retry
-  loops, Retry-After/X-RateLimit-Reset parsing, token resolution paths
+- `tests/test_db.py` — 18 tests (5 new for schema v2: fresh-build cols,
+  v1→v2 in-place migration, re-run idempotency, partial-state recovery,
+  pr fields round-trip)
+- `tests/test_github_client.py` — 43 tests
 - `tests/test_classroom.py` — 11 CSV + gh shell-out tests
-- `tests/test_cli.py` — 32 integration tests (mock RateLimitedClient at
-  the `tacon.cli` boundary; cover every op, rollback, resume, _make_confirm
-  state machine)
-- `tests/test_dashboard.py` — 12 render + grid + CLI tests
-- `tests/test_tui.py` — 6 Textual Pilot tests (`run_test()` + `pilot.press()`)
-- `tests/ops/test_*.py` — 60 unit tests across the 5 ops + auto-discovery
-- `tests/live/` — opt-in live e2e (see §3 below)
+- `tests/test_cli.py` — 43 integration tests (via-pr CLI flag, resume of
+  via-pr ops, add-branch-protection --via-pr rejection added)
+- `tests/test_dashboard.py` — 12 tests
+- `tests/test_tui.py` — 6 Textual Pilot tests
+- `tests/ops/test_via_pr.py` — **18 helper unit tests (NEW)**
+- `tests/ops/test_add_file.py` — 20 tests (7 new for via-pr)
+- `tests/ops/test_delete_file.py` — 17 tests (5 new for via-pr)
+- `tests/ops/test_add_ci_workflow.py` — 16 tests (2 new for via-pr inheritance)
+- `tests/ops/test_fix_ci_workflow.py` — 23 tests (5 new for via-pr)
+- `tests/ops/test_add_branch_protection.py` — unchanged
+- `tests/ops/test_registry_discovery.py` — unchanged
+- `tests/live/` — opt-in live e2e:
+  - `test_live_read.py` (7 tests, read-only)
+  - `test_live_apply_rollback.py` (2 tests, write+rollback for AddFile direct)
+  - `test_live_via_pr.py` (1 test, via-pr round-trip — **NEW**)
 
-### CLI surface
+### CLI surface (current)
 
 ```
 tacon sync <classroom-id>
 tacon sync --from-csv repos.csv
-tacon run add-file --path X --content-from F [--apply --yes]
-tacon run delete-file --path X [--apply --yes]
-tacon run add-ci-workflow --workflow-name ci --content-from ci.yml [--apply --yes]
+tacon run add-file --path X --content-from F [--via-pr] [--apply --yes]
+tacon run delete-file --path X [--via-pr] [--apply --yes]
+tacon run add-ci-workflow --workflow-name ci --content-from ci.yml \
+    [--via-pr] [--apply --yes]
 tacon run fix-ci-workflow --workflow-name ci \
-    --bump-action actions/checkout@v3=actions/checkout@v4 [--apply --yes]
+    --bump-action actions/checkout@v3=actions/checkout@v4 \
+    [--via-pr] [--apply --yes]
 tacon run add-branch-protection [--branch main] [--apply --yes]
-tacon rollback <op-id>
-tacon resume <op-id>          # PARTIAL — see §4 tech debt
-tacon ui                      # Textual TUI
-tacon dashboard --out ./site  # static HTML
-tacon dashboard --publish ... # NOT YET WIRED — exit 2
+                                # --via-pr is REJECTED here (read-only op)
+tacon rollback <op-id>          # auto-detects via-pr events from pr_number
+tacon resume <op-id> [--content-from FILE] [--yes]
+                                # auto-detects via-pr from op_args.via_pr
+tacon ui                        # Textual TUI
+tacon dashboard --out ./site    # static HTML
+tacon dashboard --publish ...   # NOT YET WIRED — exit 2 (still §4.4)
 tacon version
 ```
 
 ### Tooling
 
-- `pyproject.toml` — name `tacon`, version `0.1.0`. Deps: PyGithub≥2.1,
-  typer≥0.12, rich≥13.7, sqlite-utils≥3.36, jinja2≥3.1, PyYAML≥6.0.
-  Dev extras add textual, pytest-asyncio, types-PyYAML.
-  Coverage gate `--cov-fail-under=90`. `asyncio_mode = "auto"`.
+- `pyproject.toml` — name `tacon`, version `0.1.0` (NOT bumped this
+  session; v0.2 is mid-flight). Deps unchanged. Coverage gate
+  `--cov-fail-under=90`. `asyncio_mode = "auto"`.
 - `.github/workflows/ci.yml` — matrix on Python 3.10/3.11/3.12.
-- `.venv/` — Python 3.13.5; everything installed.
+- `.venv/` — Python 3.13.5 (dev extras: `pip install -e ".[dev]"`).
 - `.env` (gitignored) — live test config + GitHub token.
-- `.env.example` — documented template; uses
-  `Netdb-NCKU/pre-test-hw-Tzun27` as the worked example.
+- `.env.example` — uses `Netdb-NCKU/pre-test-hw-Tzun27` as the worked example.
+- `plans/via_pr.md` — the eng-reviewed plan that drove this session's
+  via-pr work. Read this if you want the architectural rationale
+  (constructor-flag vs wrapper-class, branch-name divergence from the
+  design doc, merged-PR rollback policy).
 
 ---
 
-## 2 · What shipped THIS session (v0.0.1 → v0.1.0)
-
-14 commits, summarized:
-
-| Commit prefix | What |
-|---|---|
-| `e509157` | DeleteFile op + 12 tests (blob-restore on rollback) |
-| `c9237be` | AddCIWorkflow op + 14 tests (YAML validation; refactored AddFile to use class attrs so subclasses plug in cleanly) |
-| `6699ac9` | FixCIWorkflow op + 18 tests (transform callback; rollback via apply commit's parent) |
-| `e1743fc` | AddBranchProtection op + 11 tests (read-only) |
-| `be9a877` | Auto-discovery: `pkgutil.iter_modules` + lazy `_ensure_discovered()` flag — no more import-side-effects |
-| `7f6e843` | CLI integration tests: cli.py 33% → 97% |
-| `dc44e35` | github_client edge tests: 65% → 99% |
-| `44da8b1` | Coverage gate 70 → 90 |
-| `05a9179` | Static dashboard (Jinja2 PackageLoader; index/op/repo pages + style.css) |
-| `fac7d08` | Textual TUI + bump to 0.1.0 |
-| `4e25f41` | README updated to reflect v0.1.0 |
-| `9c46c64` | Live e2e harness (opt-in, scope-guarded) |
-| `5901f1a` | .env.example uses concrete `Netdb-NCKU/pre-test-hw-Tzun27` example |
-| `527c3d6` | Auth.Token to silence PyGithub deprecation |
-
-Coverage today: **95%** across 19 source files. cli.py at 96%, dashboard at
-100%, tui at 99%, all 5 ops at 90+%. Project total LOC ~3.5K source + ~3.7K
-test.
-
----
-
-## 3 · Live e2e tests (the safety story)
+## 2 · Live e2e tests (the safety story)
 
 Read this before touching anything that talks to real GitHub.
 
-**Configuration is in `tacon/.env`** (gitignored). It currently contains:
+**Configuration is in `tacon/.env`** (gitignored). It typically contains:
 - `TACON_GITHUB_TOKEN` — user's GitHub PAT (scoped to repo + their org)
 - `TACON_TEST_ORG=Netdb-NCKU`
 - `TACON_TEST_ASSIGNMENT_PREFIX=pre-test-hw`
 - `TACON_TEST_REPO=Netdb-NCKU/pre-test-hw-Tzun27` (pinned to user's own repo)
-- `TACON_LIVE=1` (live tests enabled — see warning above)
+- `TACON_LIVE=1` (live tests enabled)
 
 **Hard scope guard:** `tests/live/conftest.py::assert_in_scope(repo_full_name)`
-raises `OutOfScopeError` (and aborts the test) if the repo isn't in
-`TACON_TEST_ORG` or doesn't carry `TACON_TEST_ASSIGNMENT_PREFIX` in its
-name. Every live test calls this before any API interaction. The
-discovery fixtures double-check by also calling it on every result.
-
-**The aiase2026 umbrella has multiple classrooms.** The user explicitly
-asked us to never operate outside `pre-test-hw`. The scope guard enforces
-this. **Do not loosen it.** If a future test needs broader scope, talk to
-the user first.
+raises `OutOfScopeError` if the repo isn't in `TACON_TEST_ORG` or
+doesn't carry `TACON_TEST_ASSIGNMENT_PREFIX` in its name. Every live
+test calls this before any API interaction. **Do not loosen it.** If a
+future test needs broader scope, talk to the user first.
 
 **Live tests:**
 - `test_live_read.py` (7 tests, read-only) — token auth, org visibility,
-  repo discovery, single-repo metadata read, three scope-guard self-tests
-- `test_live_apply_rollback.py` (2 tests, write+rollback) — full
+  repo discovery, single-repo metadata read, three scope-guard self-tests.
+- `test_live_apply_rollback.py` (2 tests, write+rollback) — direct-write
   AddFile.plan → apply → verify → rollback → verify-clean cycle on a
-  unique tacon-marked path (`.tacon-live-test/<random>.txt`); plus a
-  blocked-when-present test against a real README. `try`/`finally`
-  cleanup deletes any leftover even if mid-flight crashes.
+  unique tacon-marked path; plus a blocked-when-present test against a
+  real README.
+- `test_live_via_pr.py` (1 test, write+rollback with PR) — `AddFile(via_pr=True)`
+  end-to-end: branch created at default-branch HEAD, file written ON the
+  branch (NOT default), PR opened, rollback closes the PR (not merged)
+  + deletes the branch. `try/finally` cleanup closes any open PR + deletes
+  any leftover branch even if the test crashes mid-flight.
 
 To run only live tests: `.venv/bin/pytest tests/live/ -v --no-cov`.
 To skip live during a quick run: prepend `TACON_LIVE=0`.
 
 ---
 
-## 4 · v0.2 candidates (pick what the user wants)
+## 3 · `--via-pr` quick-reference (so you don't have to grep)
 
-In rough priority order based on what's actually missing or partial:
+Per-repo flow when `--via-pr` is set:
+
+```
+plan blocker (existing)        ensure_branch       (file write w/ branch=)     open_or_find_pr      record event
+─────────────────────         ─────────────       ──────────────────────       ──────────────       ────────────
+(same as direct-write)   ──►  create branch X  →  push file via X            →  open PR Y         →  applied (pr=Y, branch=X)
+                              branch exists @ same SHA → continue (idempotent)
+                              branch exists @ different SHA → BranchConflictError → skipped (error_class='conflict')
+                              other create_git_ref errors → failed (per classify_error)
+```
+
+Rollback (auto-detected by `pr_number IS NOT NULL` on the event):
+
+```
+PR state         branch state    action                       status
+───────────      ────────────    ──────                       ──────
+open             exists          close + delete branch        rolled_back
+open             missing         close                        rolled_back
+closed (!merged) exists          delete branch                rolled_back
+closed (!merged) missing         no-op                        rolled_back
+merged           (any)           refuse + manual-revert hint  skipped_dirty
+not_found (404)  (any)           best-effort branch delete    rolled_back
+```
+
+**Branch name format:** `tacon/<op-class-kebab>-<8-hex-prefix>` —
+e.g. `tacon/add-file-bc247dc1`. Single source of truth in
+`tacon/ops/_via_pr.py::via_pr_branch_name`. Diverges from the design
+doc's `tacon-bot/<full-uuid>` sketch (rationale in `plans/via_pr.md`).
+
+**Schema columns:** `events.pr_number INTEGER` and `events.pr_branch TEXT`,
+both nullable. Direct-write events store NULL. Migration is
+**fully idempotent** — fresh DBs are built straight at v2; v1 DBs
+add the columns on next `open_db`.
+
+---
+
+## 4 · v0.2 candidates (what's still on the table)
+
+In rough priority order. Three items already shipped (marked DONE).
 
 ### 4.1 — Finish `tacon resume` properly (HIGH) ✅ DONE in `bc247dc`
-Path (a) shipped. `tacon resume <op-id> [--content-from FILE] [--yes]`
-reconstructs the op from `op_args_json`, replays apply on only the
-originally-failed repos, gets a fresh op_id, annotates the original
-failed events with `(resumed in op_id=Y)`. add-file/add-ci-workflow
-require `--content-from` on resume; reject byte-length mismatches against
-the stored `content_len`. fix-ci-workflow re-derives the bump-action
-transform from `transform_id`. delete-file and add-branch-protection
-need no extra flags.
 
-If a future user asks for path (b) (content-addressable blob store
-keyed by blob SHA so resume rehydrates without --content-from), the
-hook is `tacon/cli.py::_reconstruct_op` and the JSON contract in each
-op's `args` property.
+(Path-(a) flavor.) Each op's `args` dict includes everything needed
+for reconstruction. If a future user asks for path-(b) (a content-
+addressable blob store keyed by blob SHA so resume rehydrates without
+`--content-from`), the hook is `tacon/cli.py::_reconstruct_op` and the
+JSON contract in each op's `args` property.
 
-### 4.2 — `--via-pr` mode for write ops (HIGH)
-Right now every write goes direct-to-default-branch. Branch-protected
-classrooms see per-repo failures with `error_class='permission'`.
-Per the design doc, `--via-pr` would: create a branch in the student
-repo, push the change there, open a PR. Apply still records the event;
-rollback closes the PR (plus deletes the branch?). Big feature surface;
-best to spec with `/plan-eng-review` before coding.
+### 4.2 — `--via-pr` mode for write ops (HIGH) ✅ DONE in 8 commits
+
+See §-1 for the commit sequence. The eng-reviewed plan is in
+`plans/via_pr.md`. Summary: 4 write ops + helpers + schema v2 +
+CLI + resume + README + 1 live test.
 
 ### 4.3 — AddBranchProtection write mode (MEDIUM)
+
 Today: read-only survey. Write mode needs:
 - Admin-scoped token (most TA tokens don't have it)
-- A way to express "desired protection" (a `BranchProtectionRule`
-  dataclass)
-- supports_rollback could be True (snapshot-and-restore the prior rule)
-  or False (admin actions usually shouldn't auto-revert)
+- A way to express "desired protection" — likely a `BranchProtectionRule`
+  dataclass with the typical fields (required_pull_request_reviews,
+  required_approving_review_count, required_status_checks, etc.)
+- `supports_rollback` decision: True (snapshot-and-restore the prior
+  rule) or False (admin actions usually shouldn't auto-revert).
+  **Recommend False** for safety; let the user re-run with the prior
+  rule if they want.
 
-Probably False for safety; let the user re-run with the prior rule if
-they want.
+Worth speccing with `/plan-eng-review` before coding — there's a real
+shape decision around the BranchProtectionRule dataclass.
 
 ### 4.4 — Dashboard `--publish` to gh-pages (MEDIUM)
-Today: prints "not yet wired" and exits 2. A clean implementation:
+
+Today: prints "not yet wired" and exits 2 (`tacon/cli.py::dashboard`,
+the `if publish:` branch). A clean implementation:
 - Take `--publish <owner>/<repo>` (the dashboard target repo, NOT the
-  classroom)
+  classroom).
 - Render to a tmp dir, then push to that repo's `gh-pages` branch via
-  PyGithub (or shell out to gh)
-- Idempotent: each run replaces the gh-pages tip
+  PyGithub OR shell out to `gh`. Design choice — talk to the user.
+- Idempotent: each run replaces the gh-pages tip.
 
 ### 4.5 — PyPI publish (MEDIUM) ✅ PREP DONE in `7db9398`
-- `python -m build` produces a clean wheel + sdist.
-- Wheel includes `tacon/dashboard/templates/{base,index,op,repo}.html`
-  (verified with `unzip -l dist/tacon-0.1.0-py3-none-any.whl`).
-- Console-script `tacon = "tacon.cli:app"` resolves after install;
-  `tacon version` and `tacon dashboard --out` work from a fresh
-  pip-installed wheel.
-- TUI install hint was being mangled by rich's markup parser
-  (`[tui]` was treated as a malformed style tag and stripped); fixed by
-  escaping the bracket in the `tacon ui` ImportError branch.
 
-**The user runs `twine upload` themselves.** Nothing was pushed to PyPI
-this session. Did NOT add `dashboard` to optional-dependencies — the
-dashboard command is core, not optional, so jinja2 stays required.
+Build + wheel inspection + console-script verification all green. The
+user runs `twine upload` themselves. **Bumping `__version__` from
+0.1.0 → 0.2.0** before they upload is the next pre-publish step (this
+session's commits are v0.2 work but the version string still says
+0.1.0 — intentional, mid-flight).
 
 ### 4.6 — Multi-classroom config (LOW)
-One DB per classroom is fine for now. v0.2.x can add a `classrooms`
-table + `--classroom <id>` flag if any user actually has more than one.
 
-### 4.7 — Live e2e: more ops (LOW)
-Today's live tests cover AddFile only. Add live tests for delete-file,
-add-ci-workflow, fix-ci-workflow, add-branch-protection. Each follows
-the same shape: scope guard → preflight → apply → verify → rollback →
-verify clean.
+One DB per classroom is fine for now. A `--classroom <id>` flag + a
+`~/.tacon/classes.toml` index can be added in a v0.2.x point release if
+any user actually has more than one.
 
-### 4.8 — Schema v2 (LOW, for FixCIWorkflow rollback)
-Today FixCIWorkflow's rollback fetches the prior content from the apply
-commit's parent. That works but adds two API calls per repo to a
-rollback. A `previous_blob_sha` column on events would let rollback
-fetch the blob directly. Bump SCHEMA_VERSION 1 → 2 with an `add_column`
-migration in `init_db`. Only worth it if rollback latency is a real
-issue.
+### 4.7 — Live e2e: more ops (LOW; partially done)
+
+Today's live tests: AddFile direct-write, AddFile via-pr. The other
+ops still mock-only at the live layer. Add live tests for:
+- `delete-file` (direct + via-pr)
+- `add-ci-workflow` (direct + via-pr)
+- `fix-ci-workflow` (direct + via-pr)
+- `add-branch-protection` (read-only survey only)
+
+Each follows the same shape as the existing tests: scope guard →
+preflight → apply → verify → rollback → verify clean. The new
+`test_live_via_pr.py` is a good template for the via-pr variants.
+
+### 4.8 — Schema v2 column for FixCIWorkflow rollback latency (LOW)
+
+This was a *different* schema v2 from what we just shipped. The
+already-landed migration added `pr_number`/`pr_branch`; the change in
+this item would add a `previous_blob_sha` column on events so
+FixCIWorkflow rollback can fetch the prior blob directly instead of
+walking to the apply commit's parent (saves 1-2 API calls per rollback).
+Only worth it if rollback latency turns out to be a real issue. **If
+you do this, it's now a v3 migration** (bump `SCHEMA_VERSION` to 3 +
+add a `_migrate_to_v3` after the existing one).
+
+### 4.9 — Apply-method DRY (NEW LOW; tech debt from §4.2)
+
+The four write ops' `apply()` methods all share the same boilerplate
+shape: insert planned event → blocked check → confirm callback → try
+direct-or-via-pr → catch BranchConflictError → catch GithubException →
+update_event_status. ~100 lines × 4 ops = ~400 lines of similar code.
+Could be DRYed via an `_apply_runner(self, db, gh, diff, confirm,
+write_fn)` helper in `tacon/ops/__init__.py` or `_via_pr.py`. Skipped
+this session because each op stays self-contained and the duplication
+is concentrated in one spot per op. Refactor only if a 5th write op
+gets added or if a bug forces touching all four at once.
 
 ---
 
@@ -302,92 +373,113 @@ issue.
 
 1. **Live tests fire on every pytest run** while `TACON_LIVE=1` is set
    in `.env`. Each run leaves an apply+revert pair of commits in the
-   test repo's history. Working tree stays clean.
+   test repo's history (direct-write test) and a closed PR + deleted
+   branch (via-pr test). Working tree stays clean.
 
-2. ~~**`tacon resume` is partial.**~~ Done in `bc247dc` — see §4.1.
+2. ~~**`tacon resume` is partial.**~~ Done in `bc247dc`.
 
 3. **`gh classroom` extension** may not be installed on every dev
-   machine. `discover_via_gh_classroom` raises a clear error pointing to
-   `--from-csv`. CSV fallback is the supported workflow until installed.
+   machine. `discover_via_gh_classroom` raises a clear error pointing
+   to `--from-csv`. CSV fallback is the supported workflow until
+   installed.
 
 4. **sqlite-utils 3.39 upsert quirk** — silently no-ops when the table
    has `not_null=...` constraints. We use `.insert(..., pk=..., replace=True)`
-   instead. Documented inline in `db.py`. If a write "succeeds" but the
-   row isn't there, suspect this first.
+   instead. Documented inline in `db.py`. If a write "succeeds" but
+   the row isn't there, suspect this first.
 
-5. **`--publish` is stub-only.** §4.4.
+5. **`tacon dashboard --publish` is stub-only.** §4.4.
 
-6. **Dashboard `op_id_label` printer arg** is unused-looking but is
-   needed because `_print_apply_result` is called twice (once with label,
-   once without — actually only once with label currently; could be
-   simplified, low priority).
-
-7. **AddCIWorkflow imports `_NAME_RE` from `add_ci_workflow`** in
+6. **`AddCIWorkflow` imports `_NAME_RE` from `add_ci_workflow`** in
    `fix_ci_workflow`. Sibling-module private import; tolerable but
    could move to a shared `tacon/ops/_validation.py` if a third op
    needs the same regex.
 
-8. **PyGithub 2.x deprecation** addressed in `527c3d6`. Token now goes
-   through `Auth.Token`. If we depend on more PyGithub APIs that get
-   deprecated, watch for similar warnings during live test runs.
+7. **PyGithub 2.x deprecations** addressed in `527c3d6`. Watch for new
+   ones if we depend on more PyGithub APIs.
 
-9. **Python 3.13 in the venv but CI tests 3.10/3.11/3.12.** All work; if
-   you add 3.13-only syntax (`type` statement, etc.) it'll break CI.
+8. **Python 3.13 in the venv but CI tests 3.10/3.11/3.12.** All works;
+   if you add 3.13-only syntax (`type` statement, etc.) it'll break CI.
+
+9. **PyGithub API asymmetry.** `repo.create_git_ref(ref="refs/heads/X")`
+   takes the "refs/" prefix; `repo.get_git_ref(ref="heads/X")` does
+   NOT. Documented in `_via_pr.py`'s module docstring. Mistakes here
+   surface as 404s, not parse errors.
+
+10. **PR-already-exists 422 messages vary.** `create_pull` puts the
+    "A pull request already exists" marker either on top-level
+    `message` or in `errors[].message`. `_is_pull_already_exists`
+    handles both. If a future PyGithub version normalizes this, the
+    second branch becomes dead code.
+
+11. **`__version__` is still 0.1.0.** v0.2 is mid-flight; bump to
+    0.2.0 only at publish time per §4.5.
+
+12. **Apply-method duplication across 4 ops.** §4.9. Tolerable for now.
+
+13. **Branch-delete permission soft-failure.** When `tacon rollback`
+    closes a via-pr PR but the token can't delete the branch (rare —
+    most TA tokens can), the rollback still counts as `rolled_back`
+    with a note in `error_message`. The leftover branch is harmless but
+    visible in GitHub's branch list. Not blocking.
 
 ---
 
 ## 6 · How to use gstack skills here
 
-The user has gstack installed. Project `CLAUDE.md` has skill routing.
+Project `CLAUDE.md` has skill routing. Heuristic: **skip the skill
+ceremony for polish/debugging; invoke for substantial new work.**
 
 | Situation | Skill | Why |
 |---|---|---|
-| Resuming context (today's first message) | `/context-restore` | Loads prior plan + notes |
-| Planning v0.2 scope | `/plan-eng-review` | Pressure-test architecture before coding |
-| Brainstorming op surface | `/office-hours` | Lower-friction than plan-eng-review |
-| Before committing | `/review` | Catches bugs/inconsistencies in the diff |
-| Committing + PRing | `/ship` | Safe commit + push flow |
-| Hunting a bug | `/investigate` | Root-cause first, fix second |
-| Verifying behavior | `/qa` | End-to-end behavioral check |
-| Saving progress at end of session | `/context-save` | Pairs with `/context-restore` |
+| Planning a non-trivial feature (e.g. §4.3, §4.4) | `/plan-eng-review` | Pressure-test architecture before coding. The §4.2 plan in `plans/via_pr.md` is the model. |
+| Brainstorming op surface | `/office-hours` | Lower-friction than plan-eng-review. |
+| Before pushing a feature | `/review` | Catches diff-level bugs/inconsistencies. |
+| Committing + PRing | `/ship` | Safe commit + push flow. |
+| Hunting a bug | `/investigate` | Root-cause first, fix second. |
+| End of session | `/context-save` | Pairs with `/context-restore`; update *this* file too. |
 
-**Heuristic:** if you're about to add a substantial new module
-(e.g. starting `--via-pr`), invoke `/plan-eng-review` first. If you're
-polishing or debugging, skip the ceremony.
+If you're about to add a substantial new module (`--publish` in §4.4
+is a good example: design choices around PyGithub vs `gh`, branch
+handling, auth), invoke `/plan-eng-review` first and write the plan to
+`plans/<feature>.md`. The reviewed plan is your decision log.
 
 ---
 
 ## 7 · Environment recap
 
 - **Working dir:** `/home/tzun/repos/gstack-test/tacon/`
-- **Git root:** `/home/tzun/repos/gstack-test/` (the `tacon/` subdir is
-  the Python package + tests + pyproject)
-- **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the only
-  branch; pushed.
+- **Git root:** `/home/tzun/repos/gstack-test/` (the `tacon/` subdir
+  is the Python package + tests + pyproject + plans).
+- **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the
+  only branch; pushed through `16d168b` as of this handoff.
 - **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` (Python 3.13.5).
   Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
-  directly. If pytest collection 404s on `textual`, re-install dev
+  directly. If pytest collection fails on `textual`, re-install dev
   extras: `.venv/bin/pip install -e ".[dev]"`.
-- **Default DB path:** `~/.tacon/tacon.db` (overrideable via `--db` or
+- **Default DB path:** `~/.tacon/tacon.db` (overridable via `--db` or
   `TACON_HOME`). Live tests use a per-test `tmp_path` DB; they never
   touch the user's real DB.
 - **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-gstack-test/memory/`
 - **`.env`:** at `tacon/.env` (gitignored). Contains the user's GitHub
   PAT plus live-test scope config. **Never read or echo its contents.**
+- **Plans dir:** `tacon/plans/` (tracked). Per-feature eng-review
+  artifacts. `via_pr.md` is the only one as of this handoff.
 
 ---
 
 ## 8 · TL;DR for the impatient
 
 1. Run `pytest -q --no-cov`, `ruff check .`, `mypy tacon` to confirm
-   nothing broke since the handoff. Expect 197 unit / clean / clean
-   (+9 live tests if `TACON_LIVE=1`).
-2. Ask the user **which remaining v0.2 item from §4** they want next.
-   Two HIGH/MEDIUM items already shipped (§4.1 resume, §4.5 PyPI prep).
-   The remaining HIGH is §4.2 (`--via-pr`) which the handoff explicitly
-   says to spec with `/plan-eng-review` first.
-3. Use `/plan-eng-review` for non-trivial new modules; otherwise just
-   code.
+   nothing broke since the handoff. Expect **242 unit tests passing**
+   (+10 live if `TACON_LIVE=1`), ruff clean, mypy clean across **16
+   source files**.
+2. Ask the user **which v0.2 item from §4** they want next. Three
+   already shipped (4.1, 4.2, 4.5). The remaining MEDIUM items
+   (§4.3 AddBranchProtection write mode, §4.4 dashboard `--publish`)
+   both want a `/plan-eng-review` pass before coding.
+3. Use `/plan-eng-review` for non-trivial new modules; write the plan
+   to `plans/<feature>.md`. Otherwise just code.
 4. Periodic commits — small, scoped, with clear `feat/fix/test/docs`
    prefixes. The git log so far is the model.
 5. `/context-save` at the end of your session and update this file.
