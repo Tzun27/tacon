@@ -461,8 +461,9 @@ def ui(
     try:
         from tacon.tui import TaconApp
     except ImportError as exc:
+        # Escape the bracket so rich doesn't parse [tui] as a style tag.
         err_console.print(
-            f"TUI unavailable: {exc}. Install with: pip install 'tacon[tui]'"
+            f"TUI unavailable: {exc}. Install with: pip install 'tacon\\[tui]'"
         )
         raise typer.Exit(2) from exc
 
