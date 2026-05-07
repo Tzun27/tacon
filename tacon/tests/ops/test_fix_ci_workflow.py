@@ -332,3 +332,150 @@ def test_rollback_skipped_dirty_when_file_disappeared(
 def test_rollback_returns_empty_for_unknown_op_id(tmp_db: Database, fake_gh: MagicMock) -> None:
     result = FixCIWorkflow.rollback(tmp_db, fake_gh, "op-nonexistent")
     assert result.per_repo == []
+
+
+# ---------- via_pr ----------
+
+
+def test_apply_via_pr_creates_branch_patches_and_opens_pr(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Happy path: branch created at default-branch SHA, transform applied
+    on the branch (NOT default), PR opened."""
+    fake_repo.get_contents.return_value = _content_file("orig-blob")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    fake_repo.update_file.return_value = {
+        "commit": _commit("c-pr"),
+        "content": _content_file("blob-pr", NEW_WORKFLOW),
+    }
+    pr = MagicMock(name="PR")
+    pr.number = 31
+    fake_repo.create_pull.return_value = pr
+
+    op = FixCIWorkflow(
+        name="ci",
+        transform=make_bump_action_transform("actions/checkout@v3", "actions/checkout@v4"),
+        transform_id="bump-v3-v4",
+        via_pr=True,
+    )
+    diff = op.plan(tmp_db, fake_gh)
+    result = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    assert all(r.status == "applied" for r in result.per_repo)
+    fake_repo.create_git_ref.assert_called()
+    # update_file should have been called with branch=
+    upd_kwargs = fake_repo.update_file.call_args.kwargs
+    assert upd_kwargs["branch"].startswith("tacon/fix-ci-workflow-")
+    head_kwarg = fake_repo.create_pull.call_args.kwargs["head"]
+    assert head_kwarg == upd_kwargs["branch"]
+    events = get_events_by_op(tmp_db, result.op_id)
+    assert all(e["pr_number"] == 31 for e in events)
+    assert all(e["pr_branch"] == head_kwarg for e in events)
+
+
+def test_apply_via_pr_skips_when_transform_no_op_on_branch(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Plan sees the old workflow; before apply runs, the file got patched
+    on the branch already. _patch returns None; we skip without opening PR."""
+    # Plan sees old.
+    fake_repo.get_contents.return_value = _content_file("orig-blob")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    op = FixCIWorkflow(
+        name="ci",
+        transform=make_bump_action_transform("actions/checkout@v3", "actions/checkout@v4"),
+        transform_id="bump-v3-v4",
+        via_pr=True,
+    )
+    diff = op.plan(tmp_db, fake_gh)
+
+    # Now mid-flight, the branch already contains the new content.
+    fake_repo.get_contents.return_value = _content_file("new-blob", NEW_WORKFLOW)
+
+    result = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    assert all(r.status == "skipped" for r in result.per_repo)
+    fake_repo.update_file.assert_not_called()
+    fake_repo.create_pull.assert_not_called()
+
+
+def test_apply_via_pr_branch_conflict_skipped(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    fake_repo.get_contents.return_value = _content_file("orig-blob")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "expected-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.side_effect = GithubException(
+        422, {"message": "Reference already exists"}, {}
+    )
+    existing_ref = MagicMock()
+    existing_ref.object.sha = "different-sha"
+    fake_repo.get_git_ref.return_value = existing_ref
+
+    op = FixCIWorkflow(
+        name="ci",
+        transform=make_bump_action_transform("actions/checkout@v3", "actions/checkout@v4"),
+        transform_id="bump-v3-v4",
+        via_pr=True,
+    )
+    diff = op.plan(tmp_db, fake_gh)
+    result = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    assert all(r.status == "skipped" for r in result.per_repo)
+    assert all(r.error_class == "conflict" for r in result.per_repo)
+    fake_repo.update_file.assert_not_called()
+
+
+def test_args_includes_via_pr_for_fix() -> None:
+    op = FixCIWorkflow(
+        name="ci",
+        transform=make_bump_action_transform("a", "b"),
+        transform_id="x",
+        via_pr=True,
+    )
+    assert op.args["via_pr"] is True
+
+
+def test_rollback_via_pr_closes_pr_and_deletes_branch_for_fix(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    fake_repo.get_contents.return_value = _content_file("orig-blob")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    fake_repo.update_file.return_value = {
+        "commit": _commit("c-r"),
+        "content": _content_file("blob-r", NEW_WORKFLOW),
+    }
+    pr = MagicMock()
+    pr.number = 41
+    fake_repo.create_pull.return_value = pr
+
+    op = FixCIWorkflow(
+        name="ci",
+        transform=make_bump_action_transform("actions/checkout@v3", "actions/checkout@v4"),
+        transform_id="bump-v3-v4",
+        via_pr=True,
+    )
+    diff = op.plan(tmp_db, fake_gh)
+    apply_res = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    pr_for_rollback = MagicMock()
+    pr_for_rollback.number = 41
+    pr_for_rollback.state = "open"
+    pr_for_rollback.merged = False
+    fake_repo.get_pull.return_value = pr_for_rollback
+    branch_ref = MagicMock()
+    fake_repo.get_git_ref.return_value = branch_ref
+
+    rb_res = FixCIWorkflow.rollback(tmp_db, fake_gh, apply_res.op_id)
+    assert all(r.status == "rolled_back" for r in rb_res.per_repo)
+    assert pr_for_rollback.edit.call_count == 3

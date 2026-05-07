@@ -169,3 +169,44 @@ def test_rollback_inherits_blob_safety(
     result = AddCIWorkflow.rollback(tmp_db, fake_gh, apply_result.op_id)
     assert all(r.status == "skipped_dirty" for r in result.per_repo)
     fake_repo.delete_file.assert_not_called()
+
+
+def test_add_ci_workflow_via_pr_inherits_from_add_file(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Subclass inherits AddFile's via_pr path; constructor forwards via_pr=True."""
+    fake_repo.get_contents.side_effect = UnknownObjectException(404, {"message": "Not Found"}, {})
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+
+    def _commit(sha: str) -> MagicMock:
+        c = MagicMock(name="Commit")
+        c.sha = sha
+        return c
+
+    fake_repo.create_file.return_value = {
+        "commit": _commit("c-wf"),
+        "content": _content_file("blob-wf"),
+    }
+    pr = MagicMock(name="PR")
+    pr.number = 19
+    fake_repo.create_pull.return_value = pr
+
+    op = AddCIWorkflow(name="ci", content=VALID_WORKFLOW, via_pr=True)
+    diff = op.plan(tmp_db, fake_gh)
+    result = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    assert all(r.status == "applied" for r in result.per_repo)
+    head_branch = fake_repo.create_pull.call_args.kwargs["head"]
+    # Branch carries the *AddCIWorkflow* op_class, not add_file.
+    assert head_branch.startswith("tacon/add-ci-workflow-")
+    events = get_events_by_op(tmp_db, result.op_id)
+    assert all(e["pr_number"] == 19 for e in events)
+    assert all(e["op_class"] == "add_ci_workflow" for e in events)
+
+
+def test_add_ci_workflow_args_includes_via_pr() -> None:
+    op = AddCIWorkflow(name="ci", content=VALID_WORKFLOW, via_pr=True)
+    assert op.args["via_pr"] is True

@@ -47,6 +47,13 @@ from tacon.ops import (
     RollbackResult,
     register,
 )
+from tacon.ops._via_pr import (
+    BranchConflictError,
+    close_pr_and_delete_branch,
+    ensure_branch,
+    open_or_find_pr,
+    via_pr_branch_name,
+)
 from tacon.ops.add_ci_workflow import _NAME_RE, WorkflowValidationError
 
 if TYPE_CHECKING:
@@ -67,6 +74,7 @@ class FixCIWorkflow(Op):
 
     requires_clone = False
     supports_rollback = True
+    supports_via_pr = True
 
     def __init__(
         self,
@@ -76,6 +84,7 @@ class FixCIWorkflow(Op):
         transform_id: str,
         message: str = "tacon: fix CI workflow",
         assignment_id: str | None = None,
+        via_pr: bool = False,
     ) -> None:
         if not _NAME_RE.match(name):
             raise WorkflowValidationError(
@@ -86,6 +95,7 @@ class FixCIWorkflow(Op):
         self.transform_id = transform_id
         self.message = message
         self.assignment_id = assignment_id
+        self.via_pr = via_pr
 
         filename = name if name.endswith((".yml", ".yaml")) else f"{name}.yml"
         self.path = f".github/workflows/{filename}"
@@ -100,6 +110,7 @@ class FixCIWorkflow(Op):
             "transform_id": self.transform_id,
             "message": self.message,
             "assignment_id": self.assignment_id,
+            "via_pr": self.via_pr,
         }
 
     # ---------- plan ----------
@@ -191,6 +202,7 @@ class FixCIWorkflow(Op):
         op_id = _new_op_id()
         op_args_json = json.dumps(self.args, sort_keys=True)
         result = ApplyResult(op_id=op_id, per_repo=[])
+        branch_name = via_pr_branch_name(OP_CLASS, op_id) if self.via_pr else None
 
         for repo_diff in diff.per_repo:
             event_id = insert_event(
@@ -228,7 +240,29 @@ class FixCIWorkflow(Op):
                 continue
 
             try:
-                outcome = self._patch(gh, repo_diff.repo_id)
+                if self.via_pr:
+                    assert branch_name is not None
+                    via_outcome = self._apply_via_pr(gh, repo_diff, branch_name, op_id)
+                else:
+                    direct_outcome = self._patch(gh, repo_diff.repo_id)
+                    via_outcome = (direct_outcome, None)
+            except BranchConflictError as exc:
+                update_event_status(
+                    db,
+                    event_id,
+                    status="skipped",
+                    error_class="conflict",
+                    error_message=str(exc),
+                )
+                result.per_repo.append(
+                    RepoApplyResult(
+                        repo_id=repo_diff.repo_id,
+                        status="skipped",
+                        error_class="conflict",
+                        error_message=str(exc),
+                    )
+                )
+                continue
             except GithubException as exc:
                 err_class = classify_error(exc)
                 update_event_status(
@@ -249,7 +283,8 @@ class FixCIWorkflow(Op):
                 )
                 continue
 
-            if outcome is None:
+            patch_outcome, pr_number = via_outcome
+            if patch_outcome is None:
                 # Race: between plan and apply, the file was already patched
                 # (or removed). Record as skipped.
                 update_event_status(
@@ -267,7 +302,7 @@ class FixCIWorkflow(Op):
                 )
                 continue
 
-            commit_sha, blob_sha = outcome
+            commit_sha, blob_sha = patch_outcome
             update_event_status(
                 db,
                 event_id,
@@ -275,6 +310,8 @@ class FixCIWorkflow(Op):
                 commit_sha=commit_sha,
                 applied_blob_sha=blob_sha,
                 applied_at=now_iso(),
+                pr_number=pr_number,
+                pr_branch=branch_name if pr_number is not None else None,
             )
             result.per_repo.append(
                 RepoApplyResult(
@@ -288,25 +325,70 @@ class FixCIWorkflow(Op):
         return result
 
     def _patch(
-        self, gh: RateLimitedClient, repo_id: str
+        self, gh: RateLimitedClient, repo_id: str, *, branch: str | None = None
     ) -> tuple[str, str] | None:
-        """Returns (commit_sha, new_blob_sha) on patch, or None if nothing to do."""
+        """Returns (commit_sha, new_blob_sha) on patch, or None if nothing to do.
+
+        ``branch=None`` (default) targets the repo's default branch (existing
+        v0.1 behavior). When set, get_contents and update_file both run
+        against the named branch — used by ``--via-pr`` mode.
+        """
         repo = gh.get_repo(repo_id)
-        current = gh.call(repo.get_contents, self.path)
+        get_kwargs: dict[str, object] = {}
+        if branch is not None:
+            get_kwargs["ref"] = branch
+        current = gh.call(repo.get_contents, self.path, **get_kwargs)
         old_bytes = base64.b64decode(getattr(current, "content", "") or "")
         new_bytes = self.transform(old_bytes)
         if new_bytes is None or new_bytes == old_bytes:
             return None
+        update_kwargs: dict[str, object] = {}
+        if branch is not None:
+            update_kwargs["branch"] = branch
         resp = gh.call(
             repo.update_file,
             self.path,
             self.message,
             new_bytes,
             current.sha,
+            **update_kwargs,
         )
         commit = resp["commit"]
         content = resp["content"]
         return commit.sha, content.sha
+
+    def _apply_via_pr(
+        self,
+        gh: RateLimitedClient,
+        repo_diff: RepoDiff,
+        branch_name: str,
+        op_id: str,
+    ) -> tuple[tuple[str, str] | None, int | None]:
+        """Branch + patch + open PR. Returns (patch_outcome, pr_number).
+
+        Threads `branch=` into `_patch`. If `_patch` returns None (the
+        transform is now a no-op against this repo's HEAD — race between
+        plan and apply), we skip without opening a PR; the caller maps
+        this to a `skipped` event with the existing race message.
+        """
+        repo = gh.get_repo(repo_diff.repo_id)
+        default_branch = repo.default_branch
+        head = gh.call(repo.get_branch, default_branch)
+        base_sha = head.commit.sha
+
+        ensure_branch(gh, repo, branch_name, base_sha)
+        patch_outcome = self._patch(gh, repo_diff.repo_id, branch=branch_name)
+        if patch_outcome is None:
+            return None, None
+        pr_number = open_or_find_pr(
+            gh,
+            repo,
+            branch=branch_name,
+            base=default_branch,
+            title=f"tacon: {self.message}",
+            body=_build_pr_body(self, repo_diff, op_id),
+        )
+        return patch_outcome, pr_number
 
     # ---------- rollback ----------
 
@@ -329,14 +411,17 @@ class FixCIWorkflow(Op):
 
         for event in events:
             try:
-                outcome = cls._rollback_one(
-                    gh,
-                    event["repo_id"],
-                    path,
-                    event["applied_blob_sha"],
-                    event["commit_sha"],
-                    revert_message,
-                )
+                if event.get("pr_number") is not None:
+                    outcome = cls._rollback_via_pr(gh, event["repo_id"], event)
+                else:
+                    outcome = cls._rollback_one(
+                        gh,
+                        event["repo_id"],
+                        path,
+                        event["applied_blob_sha"],
+                        event["commit_sha"],
+                        revert_message,
+                    )
             except GithubException as exc:
                 err_class = classify_error(exc)
                 update_event_status(
@@ -448,6 +533,55 @@ class FixCIWorkflow(Op):
             status="rolled_back",
             revert_sha=revert_sha,
         )
+
+
+    @staticmethod
+    def _rollback_via_pr(
+        gh: RateLimitedClient, repo_id: str, event: dict[str, object]
+    ) -> RepoRollbackResult:
+        """Rollback for a via-pr FixCIWorkflow event: close PR + delete branch.
+
+        Symmetric with AddFile/DeleteFile via-pr rollbacks. The merged-PR
+        case is handled the same way: skipped_dirty + manual-revert hint
+        rather than auto-revert against default branch.
+        """
+        pr_number_raw = event["pr_number"]
+        pr_number = int(pr_number_raw) if isinstance(pr_number_raw, (int, str)) else 0
+        branch = str(event["pr_branch"])
+        repo = gh.get_repo(repo_id)
+        outcome = close_pr_and_delete_branch(
+            gh, repo, pr_number=pr_number, branch=branch
+        )
+        if outcome.status == "skipped_dirty":
+            return RepoRollbackResult(
+                repo_id=repo_id,
+                status="skipped_dirty",
+                error_message=outcome.note,
+            )
+        return RepoRollbackResult(
+            repo_id=repo_id,
+            status="rolled_back",
+            error_message=outcome.note or None,
+        )
+
+
+# ---------- pr body ----------
+
+
+def _build_pr_body(op: FixCIWorkflow, repo_diff: RepoDiff, op_id: str) -> str:
+    """Render the PR body for a fix-ci-workflow via-pr."""
+    summary = (
+        f"`tacon` would like to apply **{op.transform_id}** to "
+        f"`{op.path}` in this repo (op id `{op_id}`).\n\nMessage: {op.message}"
+    )
+    diff_block = (
+        f"\n\n## Proposed change\n\n```diff\n{repo_diff.unified_diff.rstrip()}\n```"
+    )
+    footer = (
+        f"\n\n---\n_Generated by `tacon`. To roll back this PR, run "
+        f"`tacon rollback {op_id}` locally._"
+    )
+    return summary + diff_block + footer
 
 
 # ---------- pre-baked transforms ----------

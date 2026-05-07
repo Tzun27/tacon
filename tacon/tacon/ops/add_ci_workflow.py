@@ -44,6 +44,7 @@ class AddCIWorkflow(AddFile):
         content: str,
         message: str | None = None,
         assignment_id: str | None = None,
+        via_pr: bool = False,
     ) -> None:
         if not _NAME_RE.match(name):
             raise WorkflowValidationError(
@@ -62,6 +63,7 @@ class AddCIWorkflow(AddFile):
             content=content,
             message=message or "tacon: add CI workflow",
             assignment_id=assignment_id,
+            via_pr=via_pr,
         )
 
     # ---------- workflow-aware summary ----------
