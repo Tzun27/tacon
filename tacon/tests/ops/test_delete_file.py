@@ -218,3 +218,130 @@ def test_rollback_skipped_dirty_when_file_reappeared(
 def test_rollback_returns_empty_for_unknown_op_id(tmp_db: Database, fake_gh: MagicMock) -> None:
     result = DeleteFile.rollback(tmp_db, fake_gh, "op-nonexistent")
     assert result.per_repo == []
+
+
+# ---------- via_pr ----------
+
+
+def test_apply_via_pr_creates_branch_and_opens_pr_for_delete(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Happy path: file exists in default branch; via-pr creates a branch,
+    deletes the file ON THE BRANCH, opens a PR. Default branch unchanged."""
+    fake_repo.get_contents.return_value = _content_file("blob-original")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    fake_repo.delete_file.return_value = {"commit": _commit("c-del")}
+    new_pr = MagicMock(name="PR")
+    new_pr.number = 17
+    fake_repo.create_pull.return_value = new_pr
+
+    op = DeleteFile(path="OLD.md", via_pr=True)
+    diff = op.plan(tmp_db, fake_gh)
+    result = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    assert all(r.status == "applied" for r in result.per_repo)
+    fake_repo.create_git_ref.assert_called()
+    fake_repo.create_pull.assert_called()
+    # delete_file should have been called WITH branch=
+    del_kwargs = fake_repo.delete_file.call_args.kwargs
+    assert del_kwargs["branch"].startswith("tacon/delete-file-")
+    # The PR head should match the branch we deleted on
+    head_kwarg = fake_repo.create_pull.call_args.kwargs["head"]
+    assert head_kwarg == del_kwargs["branch"]
+    events = get_events_by_op(tmp_db, result.op_id)
+    assert all(e["pr_number"] == 17 for e in events)
+    assert all(e["pr_branch"] == head_kwarg for e in events)
+
+
+def test_apply_via_pr_skipped_on_branch_conflict_for_delete(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Branch already exists with a different SHA → skipped_dirty per repo."""
+    fake_repo.get_contents.return_value = _content_file("blob-original")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "expected-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.side_effect = GithubException(
+        422, {"message": "Reference already exists"}, {}
+    )
+    existing_ref = MagicMock()
+    existing_ref.object.sha = "different-sha"
+    fake_repo.get_git_ref.return_value = existing_ref
+
+    op = DeleteFile(path="X", via_pr=True)
+    diff = op.plan(tmp_db, fake_gh)
+    result = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    assert all(r.status == "skipped" for r in result.per_repo)
+    assert all(r.error_class == "conflict" for r in result.per_repo)
+    fake_repo.delete_file.assert_not_called()
+
+
+def test_args_includes_via_pr_for_delete() -> None:
+    op = DeleteFile(path="A", via_pr=True)
+    assert op.args["via_pr"] is True
+    assert DeleteFile(path="A", via_pr=False).args["via_pr"] is False
+
+
+def test_rollback_via_pr_closes_pr_and_deletes_branch_for_delete(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Apply via-pr, then rollback: PR closes + branch deletes."""
+    fake_repo.get_contents.return_value = _content_file("blob-original")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    fake_repo.delete_file.return_value = {"commit": _commit("c-del")}
+    new_pr = MagicMock()
+    new_pr.number = 25
+    fake_repo.create_pull.return_value = new_pr
+
+    op = DeleteFile(path="X", via_pr=True)
+    diff = op.plan(tmp_db, fake_gh)
+    apply_res = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    pr_for_rollback = MagicMock()
+    pr_for_rollback.number = 25
+    pr_for_rollback.state = "open"
+    pr_for_rollback.merged = False
+    fake_repo.get_pull.return_value = pr_for_rollback
+    branch_ref = MagicMock()
+    fake_repo.get_git_ref.return_value = branch_ref
+
+    rb_res = DeleteFile.rollback(tmp_db, fake_gh, apply_res.op_id)
+    assert all(r.status == "rolled_back" for r in rb_res.per_repo)
+    assert pr_for_rollback.edit.call_count == 3
+
+
+def test_rollback_via_pr_skipped_dirty_when_merged_for_delete(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Merged via-pr DeleteFile: skipped_dirty (TA must revert manually)."""
+    fake_repo.get_contents.return_value = _content_file("blob-original")
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    fake_repo.delete_file.return_value = {"commit": _commit("c-m")}
+    new_pr = MagicMock()
+    new_pr.number = 26
+    fake_repo.create_pull.return_value = new_pr
+
+    op = DeleteFile(path="X", via_pr=True)
+    diff = op.plan(tmp_db, fake_gh)
+    apply_res = op.apply(tmp_db, fake_gh, diff, lambda r: True)
+
+    merged_pr = MagicMock()
+    merged_pr.number = 26
+    merged_pr.state = "closed"
+    merged_pr.merged = True
+    merged_pr.merge_commit_sha = "abcd1234deadbeef"
+    fake_repo.get_pull.return_value = merged_pr
+
+    rb_res = DeleteFile.rollback(tmp_db, fake_gh, apply_res.op_id)
+    assert all(r.status == "skipped_dirty" for r in rb_res.per_repo)
+    merged_pr.edit.assert_not_called()

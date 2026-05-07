@@ -39,6 +39,13 @@ from tacon.ops import (
     RollbackResult,
     register,
 )
+from tacon.ops._via_pr import (
+    BranchConflictError,
+    close_pr_and_delete_branch,
+    ensure_branch,
+    open_or_find_pr,
+    via_pr_branch_name,
+)
 
 if TYPE_CHECKING:
     from sqlite_utils import Database
@@ -55,6 +62,7 @@ class DeleteFile(Op):
 
     requires_clone = False
     supports_rollback = True
+    supports_via_pr = True
 
     def __init__(
         self,
@@ -62,10 +70,12 @@ class DeleteFile(Op):
         path: str,
         message: str = "tacon: delete file",
         assignment_id: str | None = None,
+        via_pr: bool = False,
     ) -> None:
         self.path = path
         self.message = message
         self.assignment_id = assignment_id
+        self.via_pr = via_pr
 
     @property
     def args(self) -> dict[str, object]:
@@ -73,6 +83,7 @@ class DeleteFile(Op):
             "path": self.path,
             "message": self.message,
             "assignment_id": self.assignment_id,
+            "via_pr": self.via_pr,
         }
 
     # ---------- plan ----------
@@ -153,6 +164,7 @@ class DeleteFile(Op):
         op_id = _new_op_id()
         op_args_json = json.dumps(self.args, sort_keys=True)
         result = ApplyResult(op_id=op_id, per_repo=[])
+        branch_name = via_pr_branch_name(OP_CLASS, op_id) if self.via_pr else None
 
         for repo_diff in diff.per_repo:
             event_id = insert_event(
@@ -190,7 +202,31 @@ class DeleteFile(Op):
                 continue
 
             try:
-                commit_sha, blob_sha = self._delete(gh, repo_diff.repo_id)
+                if self.via_pr:
+                    assert branch_name is not None
+                    commit_sha, blob_sha, pr_number = self._apply_via_pr(
+                        gh, repo_diff, branch_name, op_id
+                    )
+                else:
+                    commit_sha, blob_sha = self._delete(gh, repo_diff.repo_id)
+                    pr_number = None
+            except BranchConflictError as exc:
+                update_event_status(
+                    db,
+                    event_id,
+                    status="skipped",
+                    error_class="conflict",
+                    error_message=str(exc),
+                )
+                result.per_repo.append(
+                    RepoApplyResult(
+                        repo_id=repo_diff.repo_id,
+                        status="skipped",
+                        error_class="conflict",
+                        error_message=str(exc),
+                    )
+                )
+                continue
             except GithubException as exc:
                 err_class = classify_error(exc)
                 update_event_status(
@@ -218,6 +254,8 @@ class DeleteFile(Op):
                 commit_sha=commit_sha,
                 applied_blob_sha=blob_sha,
                 applied_at=now_iso(),
+                pr_number=pr_number,
+                pr_branch=branch_name if pr_number is not None else None,
             )
             result.per_repo.append(
                 RepoApplyResult(
@@ -230,16 +268,55 @@ class DeleteFile(Op):
 
         return result
 
-    def _delete(self, gh: RateLimitedClient, repo_id: str) -> tuple[str, str]:
-        """Returns (commit_sha, blob_sha_of_deleted_content)."""
+    def _delete(
+        self, gh: RateLimitedClient, repo_id: str, *, branch: str | None = None
+    ) -> tuple[str, str]:
+        """Returns (commit_sha, blob_sha_of_deleted_content).
+
+        ``branch=None`` (default) targets the repo's default branch (existing
+        v0.1 behavior). When set, get_contents and delete_file both run
+        against the named branch — used by ``--via-pr`` mode.
+        """
         repo = gh.get_repo(repo_id)
         # Refetch so the SHA we pass to delete_file is current (the file may
         # have changed between plan and apply).
-        current = gh.call(repo.get_contents, self.path)
+        get_kwargs: dict[str, object] = {}
+        del_kwargs: dict[str, object] = {}
+        if branch is not None:
+            get_kwargs["ref"] = branch
+            del_kwargs["branch"] = branch
+        current = gh.call(repo.get_contents, self.path, **get_kwargs)
         current_sha = current.sha
-        delete_resp = gh.call(repo.delete_file, self.path, self.message, current_sha)
+        delete_resp = gh.call(
+            repo.delete_file, self.path, self.message, current_sha, **del_kwargs
+        )
         commit = delete_resp["commit"]
         return commit.sha, current_sha
+
+    def _apply_via_pr(
+        self,
+        gh: RateLimitedClient,
+        repo_diff: RepoDiff,
+        branch_name: str,
+        op_id: str,
+    ) -> tuple[str, str, int]:
+        """Create branch + delete file on it + open PR. Returns (commit, blob, pr_number)."""
+        repo = gh.get_repo(repo_diff.repo_id)
+        default_branch = repo.default_branch
+        head = gh.call(repo.get_branch, default_branch)
+        base_sha = head.commit.sha
+
+        ensure_branch(gh, repo, branch_name, base_sha)
+        commit_sha, blob_sha = self._delete(gh, repo_diff.repo_id, branch=branch_name)
+        pr_number = open_or_find_pr(
+            gh,
+            repo,
+            branch=branch_name,
+            base=default_branch,
+            title=f"tacon: {self.message}",
+            body=_build_pr_body(self, repo_diff, op_id),
+        )
+        return commit_sha, blob_sha, pr_number
 
     # ---------- rollback ----------
 
@@ -262,9 +339,13 @@ class DeleteFile(Op):
 
         for event in events:
             repo_id = event["repo_id"]
-            applied_blob_sha = event["applied_blob_sha"]
             try:
-                outcome = cls._rollback_one(gh, repo_id, path, applied_blob_sha, revert_message)
+                if event.get("pr_number") is not None:
+                    outcome = cls._rollback_via_pr(gh, repo_id, event)
+                else:
+                    outcome = cls._rollback_one(
+                        gh, repo_id, path, event["applied_blob_sha"], revert_message
+                    )
             except GithubException as exc:
                 err_class = classify_error(exc)
                 update_event_status(
@@ -357,7 +438,48 @@ class DeleteFile(Op):
         )
 
 
+    @staticmethod
+    def _rollback_via_pr(
+        gh: RateLimitedClient, repo_id: str, event: dict[str, object]
+    ) -> RepoRollbackResult:
+        """Rollback for a via-pr DeleteFile event: close PR, delete branch."""
+        pr_number_raw = event["pr_number"]
+        pr_number = int(pr_number_raw) if isinstance(pr_number_raw, (int, str)) else 0
+        branch = str(event["pr_branch"])
+        repo = gh.get_repo(repo_id)
+        outcome = close_pr_and_delete_branch(
+            gh, repo, pr_number=pr_number, branch=branch
+        )
+        if outcome.status == "skipped_dirty":
+            return RepoRollbackResult(
+                repo_id=repo_id,
+                status="skipped_dirty",
+                error_message=outcome.note,
+            )
+        return RepoRollbackResult(
+            repo_id=repo_id,
+            status="rolled_back",
+            error_message=outcome.note or None,
+        )
+
+
 # ---------- helpers ----------
+
+
+def _build_pr_body(op: DeleteFile, repo_diff: RepoDiff, op_id: str) -> str:
+    """Render the PR body shown in the GitHub UI for a delete-file via-pr."""
+    summary = (
+        f"`tacon` would like to **delete** `{op.path}` from this repo "
+        f"(op id `{op_id}`).\n\nMessage: {op.message}"
+    )
+    diff_block = (
+        f"\n\n## Proposed change\n\n```diff\n{repo_diff.unified_diff.rstrip()}\n```"
+    )
+    footer = (
+        f"\n\n---\n_Generated by `tacon`. To roll back this PR, run "
+        f"`tacon rollback {op_id}` locally._"
+    )
+    return summary + diff_block + footer
 
 
 def _new_op_id() -> str:
