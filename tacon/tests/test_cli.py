@@ -817,6 +817,75 @@ def test_resume_add_branch_protection_branch_constructs(
     assert "no failed repos are still active" in output
 
 
+@patch("tacon.cli.RateLimitedClient")
+def test_resume_via_pr_op_threads_via_pr_through_reconstruction(
+    mock_rl: MagicMock, seeded_db_path: Path, fake_gh: MagicMock, fake_repo: MagicMock, tmp_path: Path
+) -> None:
+    """A resumed via-pr op reads `via_pr=True` from op_args and replays as via-pr.
+
+    Each resumed repo gets a fresh op_id → fresh branch + PR. We verify by
+    asserting the resume run hits create_git_ref + create_pull (proving the
+    via-pr flag flowed through `_reconstruct_op`).
+    """
+    mock_rl.return_value = fake_gh
+    # Original apply: 3 failures.
+    fake_repo.get_contents.side_effect = _missing()
+    head = MagicMock(name="Branch")
+    head.commit.sha = "default-sha"
+    fake_repo.get_branch.return_value = head
+    fake_repo.create_git_ref.return_value = MagicMock()
+    # Make create_file fail to leave 3 failed events (mid-flight failure
+    # AFTER branch creation succeeded — the orphan-branch case).
+    fake_repo.create_file.side_effect = GithubException(500, {"message": "boom"}, {})
+    content_file = tmp_path / "S.md"
+    content_file.write_text("hi\n")
+
+    apply_res = runner.invoke(
+        app,
+        [
+            "run", "add-file",
+            "--path", "S.md",
+            "--content-from", str(content_file),
+            "--via-pr",
+            "--apply", "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert apply_res.exit_code == 0
+    assert "3 failed" in apply_res.stdout
+    op_id = _extract_op_id(apply_res.stdout)
+
+    # Now make the writes succeed; resume should re-create new branches + PRs
+    # with a NEW op_id (ensure_branch returns "exists_same" for the orphan
+    # branches at the same SHA, so the create_git_ref will be called by the
+    # resume flow but possibly raise 422; we make it succeed cleanly via a
+    # different branch prefix the new op_id produces).
+    fake_repo.create_git_ref.side_effect = None
+    fake_repo.create_git_ref.return_value = MagicMock()
+    fake_repo.create_file.side_effect = None
+    fake_repo.create_file.return_value = {
+        "commit": _commit("c-resume"),
+        "content": _content_file("blob-resume"),
+    }
+    new_pr = MagicMock(name="PR")
+    new_pr.number = 99
+    fake_repo.create_pull.return_value = new_pr
+
+    resume_res = runner.invoke(
+        app,
+        [
+            "resume", op_id,
+            "--content-from", str(content_file),
+            "--yes",
+            "--db", str(seeded_db_path),
+        ],
+    )
+    assert resume_res.exit_code == 0, (resume_res.stdout or "") + (resume_res.stderr or "")
+    assert "3 applied" in resume_res.stdout
+    # Resume must have opened PRs (proves via_pr was reconstructed)
+    assert fake_repo.create_pull.called
+
+
 def test_resume_unknown_op_class_exits_1(seeded_db_path: Path) -> None:
     """A synthetic event with an op_class no longer registered → exit 1."""
     from tacon import __version__

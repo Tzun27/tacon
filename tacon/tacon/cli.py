@@ -373,6 +373,7 @@ def _reconstruct_op(
     Used by `tacon resume`. Each branch mirrors the constructor call in `run`,
     sourcing every parameter except content from `args`.
     """
+    via_pr = bool(args.get("via_pr", False))
     if op_class == "add_file":
         content = _require_content_from(content_from, op_class, args)
         return AddFile(
@@ -380,12 +381,14 @@ def _reconstruct_op(
             content=content,
             message=str(args.get("message") or "tacon: add file"),
             assignment_id=_opt_str(args.get("assignment_id")),
+            via_pr=via_pr,
         )
     if op_class == "delete_file":
         return DeleteFile(
             path=str(args["path"]),
             message=str(args.get("message") or "tacon: delete file"),
             assignment_id=_opt_str(args.get("assignment_id")),
+            via_pr=via_pr,
         )
     if op_class == "add_ci_workflow":
         content = _require_content_from(content_from, op_class, args)
@@ -400,6 +403,7 @@ def _reconstruct_op(
                 content=content,
                 message=_opt_str(args.get("message")),
                 assignment_id=_opt_str(args.get("assignment_id")),
+                via_pr=via_pr,
             )
         except WorkflowValidationError as exc:
             err_console.print(f"resume: stored workflow content failed validation: {exc}")
@@ -426,6 +430,7 @@ def _reconstruct_op(
             transform_id=transform_id,
             message=str(args.get("message") or "tacon: fix CI workflow"),
             assignment_id=_opt_str(args.get("assignment_id")),
+            via_pr=via_pr,
         )
     if op_class == "add_branch_protection":
         return AddBranchProtection(
