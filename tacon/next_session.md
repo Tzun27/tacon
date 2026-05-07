@@ -1,30 +1,50 @@
-# Next session — pick up tacon at v0.1.0
+# Next session — pick up tacon mid-v0.2
 
 You (the next agent) are continuing work on **tacon**, a TA workbench for
-GitHub Classroom. The v0.1.0 surface is fully built, all gates green,
-all 14 commits in this branch are pushed to `origin/main` at
-`github.com/Tzun27/tacon`.
+GitHub Classroom. v0.1.0 shipped + two v0.2 items shipped on top
+(see §-1). The remaining HIGH-priority v0.2 work needs design input from
+the user — that's why this session paused.
 
 This file is your handoff. Read it top-to-bottom before doing anything else.
+
+---
+
+## -1 · What shipped after v0.1.0 (this session)
+
+Two commits on top of `7c181e5` (the v0.1.0 handoff doc):
+
+| Commit | What |
+|---|---|
+| `bc247dc` | **§4.1 done.** `tacon resume` finished. Reconstructs the op from `op_args_json`, replays apply on only the originally-failed repos, gets a fresh op_id, annotates the original failed events with `(resumed in op_id=Y)`. add-file/add-ci-workflow require `--content-from`; reject byte-length mismatches. fix-ci-workflow re-derives the bump-action transform from `transform_id`. delete-file and add-branch-protection need no extra flags. 8 new resume tests; 197 unit tests passing; coverage 94.47%. |
+| `7db9398` | **§4.5 partial.** Smoke-tested PyPI publish prep: `python -m build` produces clean wheel + sdist, dashboard templates land in `tacon/dashboard/templates/`, console-script `tacon` resolves, `tacon dashboard --out` renders cleanly from a fresh-venv install. **Found+fixed:** `pip install 'tacon[tui]'` was being mangled by rich (it parsed `[tui]` as a malformed style tag and stripped it). Bracket now escaped. The user still does `twine upload` themselves — nothing pushed to PyPI. |
+
+What's left for v0.2 — see §4. The remaining HIGH item (§4.2 `--via-pr`)
+explicitly says to spec with `/plan-eng-review` first, so this session
+stopped here.
 
 ---
 
 ## 0 · Orient yourself (5 min)
 
 ```bash
-cd /home/tzun/repos/tacon/tacon
-git status --short                # should be clean (or just .gitignored .env / .venv)
-git log --oneline | head -5       # confirm 527c3d6 is the tip
-.venv/bin/pytest -q --no-cov      # 198 tests pass (189 unit + 9 live, ~70s)
+cd /home/tzun/repos/gstack-test/tacon
+git status --short                # should be clean (or just .gitignored .env / .venv / dist)
+git log --oneline | head -5       # confirm 7db9398 is the tip
+.venv/bin/pytest -q --no-cov      # 197 unit tests pass in ~20s; +6 live tests if TACON_LIVE=1
 .venv/bin/ruff check . && .venv/bin/mypy tacon   # both clean
 ```
 
 Expected:
-- `527c3d6 fix(tacon): use Auth.Token …` is the tip of `main`.
-- 189 unit tests pass in ~12s; 9 live tests pass in ~60s **if the user's
-  `.env` has `TACON_LIVE=1`** (it does as of writing). Live tests hit the
-  real GitHub API.
-- Coverage 95% (gate 90%). ruff + mypy clean across 19 files.
+- `7db9398 fix(tacon): escape [tui] in TUI-missing install hint …` is the tip of `main`.
+- 197 unit tests pass; 9 live tests pass **if the user's `.env` has
+  `TACON_LIVE=1`** (it does as of v0.1.0). Live tests hit the real
+  GitHub API.
+- Coverage 94.47% (gate 90%). ruff + mypy clean across 15 source files.
+
+> **Drift caught last session:** the venv had lost its dev extras
+> (`textual`, `pytest-asyncio`, `types-pyyaml`). If pytest collection
+> fails with `ModuleNotFoundError: No module named 'textual'`, run
+> `.venv/bin/pip install -e ".[dev]"` and try again.
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -201,17 +221,20 @@ To skip live during a quick run: prepend `TACON_LIVE=0`.
 
 In rough priority order based on what's actually missing or partial:
 
-### 4.1 — Finish `tacon resume` properly (HIGH)
-Today's behavior: prints failed-repo list + a manual workaround hint. The
-op_args_json column already stores the args; what's missing is content
-re-storage for AddFile (we deliberately hash it in args, not store
-bytes). Two paths:
-- **(a)** Require `--content-from` on resume too; replay only failed
-  repos by skipping already-applied ones. Lowest-friction.
-- **(b)** Add a `tacon/blobs/` content-addressable store keyed by
-  blob SHA. resume hydrates from there.
+### 4.1 — Finish `tacon resume` properly (HIGH) ✅ DONE in `bc247dc`
+Path (a) shipped. `tacon resume <op-id> [--content-from FILE] [--yes]`
+reconstructs the op from `op_args_json`, replays apply on only the
+originally-failed repos, gets a fresh op_id, annotates the original
+failed events with `(resumed in op_id=Y)`. add-file/add-ci-workflow
+require `--content-from` on resume; reject byte-length mismatches against
+the stored `content_len`. fix-ci-workflow re-derives the bump-action
+transform from `transform_id`. delete-file and add-branch-protection
+need no extra flags.
 
-(a) is probably right for v0.2; (b) is overkill until a user asks.
+If a future user asks for path (b) (content-addressable blob store
+keyed by blob SHA so resume rehydrates without --content-from), the
+hook is `tacon/cli.py::_reconstruct_op` and the JSON contract in each
+op's `args` property.
 
 ### 4.2 — `--via-pr` mode for write ops (HIGH)
 Right now every write goes direct-to-default-branch. Branch-protected
@@ -240,17 +263,20 @@ Today: prints "not yet wired" and exits 2. A clean implementation:
   PyGithub (or shell out to gh)
 - Idempotent: each run replaces the gh-pages tip
 
-### 4.5 — PyPI publish (MEDIUM)
-The name `tacon` was reserved at v0.0.1. The user runs `twine upload`,
-not us. To prep:
-- Verify build with `hatch build`
-- Confirm template files (`tacon/dashboard/templates/*.html`) actually
-  end up in the wheel — hatch defaults usually do this but verify with
-  `unzip -l dist/tacon-0.1.0-py3-none-any.whl | grep templates`
-- Check that `[project.scripts] tacon = "tacon.cli:app"` resolves after
-  install
-- Optionally add `[project.optional-dependencies] dashboard = [jinja2…]`
-  if we want to make jinja2 optional
+### 4.5 — PyPI publish (MEDIUM) ✅ PREP DONE in `7db9398`
+- `python -m build` produces a clean wheel + sdist.
+- Wheel includes `tacon/dashboard/templates/{base,index,op,repo}.html`
+  (verified with `unzip -l dist/tacon-0.1.0-py3-none-any.whl`).
+- Console-script `tacon = "tacon.cli:app"` resolves after install;
+  `tacon version` and `tacon dashboard --out` work from a fresh
+  pip-installed wheel.
+- TUI install hint was being mangled by rich's markup parser
+  (`[tui]` was treated as a malformed style tag and stripped); fixed by
+  escaping the bracket in the `tacon ui` ImportError branch.
+
+**The user runs `twine upload` themselves.** Nothing was pushed to PyPI
+this session. Did NOT add `dashboard` to optional-dependencies — the
+dashboard command is core, not optional, so jinja2 stays required.
 
 ### 4.6 — Multi-classroom config (LOW)
 One DB per classroom is fine for now. v0.2.x can add a `classrooms`
@@ -278,8 +304,7 @@ issue.
    in `.env`. Each run leaves an apply+revert pair of commits in the
    test repo's history. Working tree stays clean.
 
-2. **`tacon resume` is partial.** It identifies failed events and prints
-   a workaround hint. See §4.1.
+2. ~~**`tacon resume` is partial.**~~ Done in `bc247dc` — see §4.1.
 
 3. **`gh classroom` extension** may not be installed on every dev
    machine. `discover_via_gh_classroom` raises a clear error pointing to
@@ -334,18 +359,19 @@ polishing or debugging, skip the ceremony.
 
 ## 7 · Environment recap
 
-- **Working dir:** `/home/tzun/repos/tacon/tacon/`
-- **Git root:** `/home/tzun/repos/tacon/` (the `tacon/` subdir is the
-  Python package + tests)
+- **Working dir:** `/home/tzun/repos/gstack-test/tacon/`
+- **Git root:** `/home/tzun/repos/gstack-test/` (the `tacon/` subdir is
+  the Python package + tests + pyproject)
 - **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the only
   branch; pushed.
-- **venv:** `/home/tzun/repos/tacon/tacon/.venv/` (Python 3.13.5).
+- **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` (Python 3.13.5).
   Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
-  directly.
+  directly. If pytest collection 404s on `textual`, re-install dev
+  extras: `.venv/bin/pip install -e ".[dev]"`.
 - **Default DB path:** `~/.tacon/tacon.db` (overrideable via `--db` or
   `TACON_HOME`). Live tests use a per-test `tmp_path` DB; they never
   touch the user's real DB.
-- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-tacon/memory/`
+- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-gstack-test/memory/`
 - **`.env`:** at `tacon/.env` (gitignored). Contains the user's GitHub
   PAT plus live-test scope config. **Never read or echo its contents.**
 
@@ -354,11 +380,12 @@ polishing or debugging, skip the ceremony.
 ## 8 · TL;DR for the impatient
 
 1. Run `pytest -q --no-cov`, `ruff check .`, `mypy tacon` to confirm
-   nothing broke since the handoff. Expect 198 / clean / clean.
-2. Ask the user **which v0.2 item from §4** they want next. Most likely:
-   - "finish resume" → §4.1
-   - "make ops work on protected branches" → §4.2 (`--via-pr`)
-   - "publish to PyPI" → §4.5
+   nothing broke since the handoff. Expect 197 unit / clean / clean
+   (+9 live tests if `TACON_LIVE=1`).
+2. Ask the user **which remaining v0.2 item from §4** they want next.
+   Two HIGH/MEDIUM items already shipped (§4.1 resume, §4.5 PyPI prep).
+   The remaining HIGH is §4.2 (`--via-pr`) which the handoff explicitly
+   says to spec with `/plan-eng-review` first.
 3. Use `/plan-eng-review` for non-trivial new modules; otherwise just
    code.
 4. Periodic commits — small, scoped, with clear `feat/fix/test/docs`
