@@ -11,6 +11,10 @@ build/
 .venv/
 venv/
 
+# Default output dir for `tacon dashboard` (when --out is omitted).
+# Real publishes pass --out explicitly; this catches the convenience-default path.
+tacon-dashboard/
+
 # Local user state
 ~/.tacon/
 *.db
