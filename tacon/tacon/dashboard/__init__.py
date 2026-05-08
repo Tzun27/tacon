@@ -7,6 +7,16 @@ host; no JavaScript or backend required.
 
 from __future__ import annotations
 
+from tacon.dashboard.publish import (
+    PublishError,
+    PublishResult,
+    publish_to_gh_pages,
+)
 from tacon.dashboard.render import render
 
-__all__ = ["render"]
+__all__ = [
+    "PublishError",
+    "PublishResult",
+    "publish_to_gh_pages",
+    "render",
+]
