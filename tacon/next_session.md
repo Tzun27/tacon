@@ -1,9 +1,11 @@
-# Next session — pick up tacon mid-v0.2 (after AddBranchProtection write mode)
+# Next session — pick up tacon after v0.2.0
 
 You (the next agent) are continuing work on **tacon**, a TA workbench for
-GitHub Classroom. v0.1.0 shipped + five v0.2 items shipped on top
-(see §-1). What's left for v0.2 either needs design input from the user
-or is genuinely lower priority — that's why this session paused.
+GitHub Classroom. **v0.2.0 has fully shipped**: all six MEDIUM/HIGH items
+from the v0.2 roadmap (resume, --via-pr, AddBranchProtection write mode,
+PyPI prep, more live e2e, dashboard --publish), plus the `__version__`
+bump. What's left for v0.2.x is the LOW/speculative trio in §4.6 / §4.8 /
+§4.9, none of which the handoff recommends picking up unsolicited.
 
 This file is your handoff. **Read it top-to-bottom before doing anything
 else.** §-1 (what shipped this session) and §4 (what's left) are the
@@ -13,7 +15,7 @@ two parts you can't skip.
 
 ## -1 · What shipped after v0.1.0
 
-**Twenty-three commits since the v0.1.0 handoff** (`7c181e5`):
+**Twenty-seven commits since the v0.1.0 handoff** (`7c181e5`):
 
 | Commit | Item | What |
 |---|---|---|
@@ -40,31 +42,35 @@ two parts you can't skip.
 | `81df2b1` | §4.3 | **Bundled templates `tacon-default` + `strict-pr`** at `tacon/templates/protection/*.yaml`. Verified to ship inside the wheel via `python -m build`. 4 new tests. |
 | `06cae35` | §4.3 | **AddBranchProtection write mode** — op accepts optional `rule=BranchProtectionRule`. `plan()` renders a desired-state diff + idempotency block; `apply()` snapshots prior protection to `events.prior_state_json` then writes via `branch.edit_protection`; `rollback()` filters status='applied', drift-checks current vs applied, restores prior (or `remove_protection` if prior was null). `supports_rollback=True` at class level so the CLI passes through; survey op_ids yield empty rollback (clear "nothing to roll back" message). 15 new unit tests. |
 | `245fa0d` | §4.3 | **CLI `--rule-from`/`--rule-template` flags** + write-mode resume. Mutually exclusive flags switch from survey to write mode; both-given/missing-file/bad-YAML/unknown-template all exit 2. Resume rehydrates the rule from `op_args.rule`. 7 new CLI tests covering the matrix. |
+| `e931079` | §4.4 | **`tacon/dashboard/publish.py`** — `publish_to_gh_pages` helper. Atomic via the git-data API (blob → tree → commit → ref), so the branch never sits half-published. Fresh tree (no `base_tree`) per publish replaces the prior contents; commits chain to the existing tip when one exists, preserving an audit trail. Validates target_repo shape + skips dotfiles. Returns `PublishResult` with branch_status (`created`/`updated`) + a best-effort `pages_url`. |
+| `5a7b289` | §4.4 | **CLI wiring for `--publish`** — `tacon dashboard --publish OWNER/REPO` (+ `--publish-branch`, `--publish-message`). Renders + publishes in one command. 19 new tests: input-validation, branch-create vs update, 404 fallback variants (UnknownObjectException AND generic GithubException(404)), custom branch, CLI flag forwarding, `PublishError` → exit 2, regression guard that no `RateLimitedClient` is constructed when `--publish` is omitted (render-only stays token-free). Removed the old "not yet wired" CLI test. |
+| `a19063f` | §4.4, docs | **README + CLI help** — new "Dashboard --publish" section spells out user-page-vs-project-page distinction so it's obvious that pointing at a dedicated repo (`myorg/cs101-dashboard`) doesn't touch `<username>.github.io`. CLI help mirrors the warning. |
+| `7a9c743` | §4.5 | **`__version__` 0.1.0 → 0.2.0** in `tacon/__init__.py` and `pyproject.toml`. Verified: fresh `python -m build` produces `tacon-0.2.0-py3-none-any.whl` + sdist; both contain `tacon/dashboard/publish.py` and the bundled protection templates. |
 
-Five v0.2 items now shipped: §4.1 (resume), §4.2 (`--via-pr`), §4.3
-(AddBranchProtection write mode), §4.5 (PyPI prep), §4.7 (live e2e for
-the remaining ops). What's left is in §4 below.
+**Six v0.2 items now shipped**: §4.1 (resume), §4.2 (`--via-pr`), §4.3
+(AddBranchProtection write mode), §4.4 (dashboard `--publish`),
+§4.5 (PyPI prep + version bump), §4.7 (live e2e for the remaining ops).
+What's left is the LOW/speculative trio in §4 below.
 
 ---
 
 ## 0 · Orient yourself (5 min)
 
 ```bash
-cd /home/tzun/repos/tacon/tacon
-git status --short                   # clean (or just .gitignored .env / .venv / dist)
-git log --oneline | head -5          # confirm the §4.3 final commit is the tip
-.venv/bin/pytest -q --no-cov         # 300 unit tests pass in ~19s
-.venv/bin/ruff check . && .venv/bin/mypy tacon   # both clean
+cd /home/tzun/repos/gstack-test/tacon
+git status --short                   # clean (or just .gitignored .env / .venv / dist / tacon-dashboard)
+git log --oneline | head -5          # confirm the §4.5 version-bump commit is the tip
+.venv/bin/pytest -q --no-cov --ignore=tests/live   # 318 unit tests pass in ~30s
+.venv/bin/ruff check . && .venv/bin/mypy tacon     # both clean
 ```
 
 Expected:
-- The §4.3 final commit (CLI wiring) is the tip of `main`.
-- 300 unit tests pass (was 242 in v0.1; +5 schema v3, +31 rule, +15
-  write-mode op, +7 CLI). **18 live unit tests + 1 live skip-on-403**
-  pass if `TACON_LIVE=1`. Live tests hit the real GitHub API.
-- Coverage stays above 90% (gate). ruff + mypy clean across **19
-  source files** (+1 _branch_protection_rule.py, +1 templates/__init__.py,
-  +1 templates/protection/__init__.py).
+- The §4.5 version-bump commit (`7a9c743`) is the tip of `main`.
+- 318 unit tests pass (was 300 mid-v0.2; +19 dashboard publish tests,
+  -1 stale "not yet wired" CLI test). **18 live unit tests + 1 live
+  skip-on-403** pass if `TACON_LIVE=1`. Live tests hit the real GitHub API.
+- Coverage stays above 90% (gate). ruff + mypy clean across **20
+  source files** (+1 `tacon/dashboard/publish.py` since the last handoff).
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -96,7 +102,7 @@ has drifted since this handoff was written.
 
 ```
 tacon/
-├── __init__.py                       __version__ = "0.1.0"
+├── __init__.py                       __version__ = "0.2.0"
 ├── cli.py                            Typer app: sync, run (+ --via-pr),
 │                                     rollback, resume (+ --content-from),
 │                                     ui, dashboard, version
@@ -149,8 +155,13 @@ tacon/
 │       ├── tacon-default.yaml        1 review, dismiss-stale, no req. checks
 │       └── strict-pr.yaml            2 reviews, enforce admins, linear history
 ├── dashboard/
-│   ├── __init__.py                   re-exports render
+│   ├── __init__.py                   re-exports render + publish_to_gh_pages
 │   ├── render.py                     Jinja2 → static HTML
+│   ├── publish.py                    `publish_to_gh_pages` (NEW v0.2 §4.4).
+│   │                                 Atomic git-data API publish: blob → tree
+│   │                                 → commit → ref. Fresh tree per publish
+│   │                                 (no base_tree) so stale files don't
+│   │                                 linger; commits chain to existing tip.
 │   └── templates/
 │       ├── base.html, index.html, op.html, repo.html
 └── tui/
@@ -164,7 +175,7 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 **Modules starting with `_` are explicitly skipped** — that's why
 `_via_pr.py` is helpers, not an op.
 
-### Tests (tests/, 300 unit + 18 live + 1 skip-on-403 live)
+### Tests (tests/, 318 unit + 18 live + 1 skip-on-403 live)
 
 - `tests/conftest.py` — `tmp_db`, `seed_repos`, `fake_repo`, `fake_gh`
 - `tests/test_db.py` — 23 tests (5 schema-v2 + 5 schema-v3:
@@ -177,6 +188,10 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
   via-pr ops, add-branch-protection --via-pr rejection, +7 new for
   --rule-from / --rule-template / write-mode resume in §4.3)
 - `tests/test_dashboard.py` — 12 tests
+- `tests/test_dashboard_publish.py` — **19 tests (NEW v0.2 §4.4)** — input
+  validation, branch-create vs update, 404 fallback variants, custom
+  branch, CLI flag forwarding, error exit codes, no-publish-flag
+  regression guard
 - `tests/test_tui.py` — 6 Textual Pilot tests
 - `tests/ops/test_via_pr.py` — 18 helper unit tests (v0.2 §4.2)
 - `tests/ops/test_add_file.py` — 20 tests
@@ -222,14 +237,15 @@ tacon resume <op-id> [--content-from FILE] [--yes]
                                 # auto-detects via-pr from op_args.via_pr
 tacon ui                        # Textual TUI
 tacon dashboard --out ./site    # static HTML
-tacon dashboard --publish ...   # NOT YET WIRED — exit 2 (still §4.4)
+tacon dashboard --publish OWNER/REPO [--publish-branch B] [--publish-message M]
+                                # render + push to gh-pages on a dedicated repo
 tacon version
 ```
 
 ### Tooling
 
-- `pyproject.toml` — name `tacon`, version `0.1.0` (NOT bumped this
-  session; v0.2 is mid-flight). Deps unchanged. Coverage gate
+- `pyproject.toml` — name `tacon`, version `0.2.0` (bumped at the end
+  of v0.2 work, ready for `twine upload`). Deps unchanged. Coverage gate
   `--cov-fail-under=90`. `asyncio_mode = "auto"`.
 - `.github/workflows/ci.yml` — matrix on Python 3.10/3.11/3.12.
 - `.venv/` — Python 3.13.5 (dev extras: `pip install -e ".[dev]"`).
@@ -338,7 +354,8 @@ rollback (see §4.3).
 
 ## 4 · v0.2 candidates (what's still on the table)
 
-In rough priority order. Five items already shipped (marked DONE).
+In rough priority order. **Six items shipped** (4.1, 4.2, 4.3, 4.4, 4.5,
+4.7 marked DONE); only LOW/speculative items remain.
 
 ### 4.1 — Finish `tacon resume` properly (HIGH) ✅ DONE in `bc247dc`
 
@@ -373,23 +390,37 @@ Future extensions beyond v0.2:
 - **Org-level Repository Rule Sets** — separate API surface; would be
   a new op (`add-org-ruleset`?), not a write-mode of this one.
 
-### 4.4 — Dashboard `--publish` to gh-pages (MEDIUM)
+### 4.4 — Dashboard `--publish` to gh-pages (MEDIUM) ✅ DONE in 3 commits
 
-Today: prints "not yet wired" and exits 2 (`tacon/cli.py::dashboard`,
-the `if publish:` branch). A clean implementation:
-- Take `--publish <owner>/<repo>` (the dashboard target repo, NOT the
-  classroom).
-- Render to a tmp dir, then push to that repo's `gh-pages` branch via
-  PyGithub OR shell out to `gh`. Design choice — talk to the user.
-- Idempotent: each run replaces the gh-pages tip.
+Shipped: `tacon/dashboard/publish.py::publish_to_gh_pages` (atomic via
+the git-data API — blob → tree → commit → ref; fresh tree per publish
+so stale files don't linger; commits chain to existing tip preserving
+audit trail). CLI: `tacon dashboard --publish OWNER/REPO`, plus
+`--publish-branch` and `--publish-message`. README and CLI help warn
+about the user-page vs project-page distinction (don't aim at
+`<username>/<username>.github.io`). Chose PyGithub over `gh` shell-out
+for consistency with the rest of the codebase. 19 unit tests; no live
+test (would require a sacrificial dashboard repo + extra scope guard —
+deferred until anyone actually wants live coverage of this).
 
-### 4.5 — PyPI publish (MEDIUM) ✅ PREP DONE in `7db9398`
+Future extensions:
+- **Live e2e** — would need a dedicated test target repo (the existing
+  `pre-test-hw-Tzun27` test repo isn't appropriate as a Pages target).
+  Add `TACON_TEST_PAGES_REPO` to `.env.example` if/when this happens.
+- **Custom domain (`CNAME`)** — currently `pages_url` is a best-effort
+  guess at `https://<owner>.github.io/<repo>/`. If the user wants a
+  custom domain we could let them pass `--publish-cname` and write the
+  `CNAME` file into the published tree.
+- **`.nojekyll`** — none of our files start with `_`, so we don't need
+  it today. If a future template adds underscore-prefixed assets, drop
+  a `.nojekyll` into `_collect_site_files`'s output.
 
-Build + wheel inspection + console-script verification all green. The
-user runs `twine upload` themselves. **Bumping `__version__` from
-0.1.0 → 0.2.0** before they upload is the next pre-publish step (this
-session's commits are v0.2 work but the version string still says
-0.1.0 — intentional, mid-flight).
+### 4.5 — PyPI publish (MEDIUM) ✅ DONE (`7a9c743`)
+
+Version bumped to 0.2.0. `python -m build` produces clean
+`tacon-0.2.0-py3-none-any.whl` + `tacon-0.2.0.tar.gz` with all v0.2
+modules and templates included. **The user runs `twine upload` themselves**
+when ready to publish to PyPI.
 
 ### 4.6 — Multi-classroom config (LOW)
 
@@ -450,7 +481,7 @@ gets added or if a bug forces touching all four at once.
    instead. Documented inline in `db.py`. If a write "succeeds" but
    the row isn't there, suspect this first.
 
-5. **`tacon dashboard --publish` is stub-only.** §4.4.
+5. ~~**`tacon dashboard --publish` is stub-only.**~~ Done in `5a7b289`.
 
 6. **`AddCIWorkflow` imports `_NAME_RE` from `add_ci_workflow`** in
    `fix_ci_workflow`. Sibling-module private import; tolerable but
@@ -474,8 +505,7 @@ gets added or if a bug forces touching all four at once.
     handles both. If a future PyGithub version normalizes this, the
     second branch becomes dead code.
 
-11. **`__version__` is still 0.1.0.** v0.2 is mid-flight; bump to
-    0.2.0 only at publish time per §4.5.
+11. ~~**`__version__` is still 0.1.0.**~~ Bumped to 0.2.0 in `7a9c743`.
 
 12. **Apply-method duplication across 4 ops.** §4.9. Tolerable for now.
 
@@ -510,14 +540,15 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 
 ## 7 · Environment recap
 
-- **Working dir:** `/home/tzun/repos/tacon/tacon/`
-- **Git root:** `/home/tzun/repos/tacon/` (the `tacon/` subdir is the
-  Python package + tests + pyproject + plans).
+- **Working dir:** `/home/tzun/repos/gstack-test/tacon/`
+- **Git root:** `/home/tzun/repos/gstack-test/` (the `tacon/` subdir is
+  the Python package + tests + pyproject + plans).
 - **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the
   only branch; the most recent push from prior sessions was `16d168b`.
-  This session adds 14 commits on top (§4.7 + §4.3); whether they're
-  pushed depends on what you (the user) chose to do.
-- **venv:** `/home/tzun/repos/tacon/tacon/.venv/` (Python 3.13.5).
+  This session adds the §4.7 + §4.3 commits plus four §4.4/§4.5 commits
+  (`e931079`, `5a7b289`, `a19063f`, `7a9c743`); whether they're pushed
+  depends on what you (the user) chose to do.
+- **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` (Python 3.13.5).
   Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
   directly. If pytest collection fails on `textual`, re-install dev
   extras: `.venv/bin/pip install -e ".[dev]"`.
@@ -535,19 +566,27 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 
 ## 8 · TL;DR for the impatient
 
-1. Run `pytest -q --no-cov`, `ruff check .`, `mypy tacon` to confirm
-   nothing broke since the handoff. Expect **300 unit tests passing**
-   (+18 live tests + 1 skip-on-403 if `TACON_LIVE=1`), ruff clean,
-   mypy clean across **19 source files**.
-2. Ask the user **which v0.2 item from §4** they want next. Five
-   already shipped (4.1, 4.2, 4.3, 4.5, 4.7). The remaining MEDIUM
-   item is §4.4 dashboard `--publish` — wants a `/plan-eng-review`
-   pass before coding (PyGithub vs `gh` shell-out, gh-pages branch
-   handling). The LOW items (§4.6/§4.8/§4.9) are all speculative per
-   the handoff and likely shouldn't be picked up unless someone
-   actually wants them.
-3. Use `/plan-eng-review` for non-trivial new modules; write the plan
+1. Run `pytest -q --no-cov --ignore=tests/live`, `ruff check .`,
+   `mypy tacon` to confirm nothing broke since the handoff. Expect
+   **318 unit tests passing** (+18 live tests + 1 skip-on-403 if
+   `TACON_LIVE=1`), ruff clean, mypy clean across **20 source files**.
+2. **v0.2 is done.** All six MEDIUM/HIGH items shipped (§4.1, §4.2, §4.3,
+   §4.4, §4.5, §4.7). What's left is §4.6 / §4.8 / §4.9 — the
+   speculative LOW trio that the handoff explicitly says not to pick up
+   unless the user asks. Default move: **ask the user what they want
+   next** (PyPI upload? v0.3 brainstorm? a specific bug or feature
+   request? one of the LOW items?).
+3. **Possible immediate-next moves** if the user wants action:
+   - **`twine upload dist/tacon-0.2.0*`** — user-side step; you can
+     suggest but not run it. Confirm artifacts: `dist/tacon-0.2.0.tar.gz`
+     + `dist/tacon-0.2.0-py3-none-any.whl` already built in `dist/`.
+   - **Push the 4 unpushed commits** (`e931079`, `5a7b289`, `a19063f`,
+     `7a9c743`) to the GitHub remote. Ask first.
+   - **Live e2e for `--publish`** (a §4.4 future extension) — would need
+     a sacrificial dashboard-target repo + `TACON_TEST_PAGES_REPO` env
+     var.
+4. Use `/plan-eng-review` for non-trivial new modules; write the plan
    to `plans/<feature>.md`. Otherwise just code.
-4. Periodic commits — small, scoped, with clear `feat/fix/test/docs`
+5. Periodic commits — small, scoped, with clear `feat/fix/test/docs`
    prefixes. The git log so far is the model.
-5. `/context-save` at the end of your session and update this file.
+6. `/context-save` at the end of your session and update this file.
