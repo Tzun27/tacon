@@ -584,7 +584,10 @@ def dashboard(
         typer.Option(
             "--publish",
             help="<owner>/<repo> to push static site to a branch (default gh-pages). "
-            "The token must have push access to that repo.",
+            "Use a dedicated dashboard repo (e.g. 'myorg/cs101-dashboard') — "
+            "this WILL overwrite the gh-pages branch of whatever repo you point at, "
+            "so do not aim it at <username>/<username>.github.io. "
+            "The token must have push access to the target.",
         ),
     ] = None,
     publish_branch: Annotated[

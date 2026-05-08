@@ -58,6 +58,10 @@ tacon ui
 # 7. Render a shareable static HTML dashboard
 tacon dashboard --out ./tacon-site
 # open ./tacon-site/index.html
+
+# 8. Or render + push to a gh-pages branch in one command
+tacon dashboard --out ./tacon-site --publish OWNER/dashboard-repo
+# served at https://OWNER.github.io/dashboard-repo/
 ```
 
 ## Available ops
@@ -98,7 +102,7 @@ v0.2 (in progress):
   fresh op_id; original failed events get an audit-trail annotation.
 - ✅ `tacon run --via-pr` (described below) for branch-protected classrooms.
 - ✅ AddBranchProtection write mode (described below) with snapshot+restore rollback.
-- 🚧 `tacon dashboard --publish` (push to gh-pages).
+- ✅ `tacon dashboard --publish` (push to a project gh-pages branch).
 
 ## `--via-pr` mode (branch-protected classrooms)
 
@@ -170,6 +174,41 @@ clobber if someone else has changed protection since.
 repos; non-admin tokens get a per-repo `error_class='permission'`
 failure. Run with an admin token (org-level "manage repositories"
 permission) to use write mode.
+
+## Dashboard `--publish`
+
+`tacon dashboard --publish OWNER/REPO` renders the static dashboard,
+then pushes it to that repo's `gh-pages` branch via the GitHub git-data
+API. The branch is created if missing; otherwise a fresh commit
+**replaces** the tree (no incremental patching, so stale files don't
+linger). Each publish chains to the previous tip, preserving an audit
+trail in the branch's history.
+
+```bash
+# render + publish in one call
+tacon dashboard --publish myorg/cs101-dashboard
+
+# different branch (e.g. for staging)
+tacon dashboard --publish myorg/cs101-dashboard --publish-branch deploy
+
+# custom commit message
+tacon dashboard --publish myorg/cs101-dashboard \
+    --publish-message "weekly snapshot 2026-W19"
+```
+
+**Won't this clobber my existing GitHub Pages site?** No, as long as you
+publish to a *dedicated* repo. The "one site per account" rule only
+applies to **user/org pages** (the `<username>.github.io` repo). Every
+other repo gets its own **project page** at
+`https://<owner>.github.io/<repo>/` from its `gh-pages` branch — they're
+all independent. Recommended setup: create an empty `cs101-dashboard`
+repo, point `--publish` at it, and your existing personal site stays
+untouched. Just don't aim `--publish` at `<username>/<username>.github.io`
+itself.
+
+The token used (`TACON_GITHUB_TOKEN` / `GITHUB_TOKEN` / `gh auth token`)
+must have push access to the target repo. Pages typically goes live one
+to two minutes after the first publish.
 
 ## Limitations
 
