@@ -581,22 +581,37 @@ def dashboard(
     out: Annotated[Path | None, typer.Option("--out", help="Output dir for static HTML.")] = None,
     publish: Annotated[
         str | None,
-        typer.Option("--publish", help="<owner>/<repo> to push static site to gh-pages."),
+        typer.Option(
+            "--publish",
+            help="<owner>/<repo> to push static site to a branch (default gh-pages). "
+            "The token must have push access to that repo.",
+        ),
     ] = None,
+    publish_branch: Annotated[
+        str,
+        typer.Option(
+            "--publish-branch",
+            help="Branch to publish to. Default: gh-pages.",
+        ),
+    ] = "gh-pages",
+    publish_message: Annotated[
+        str | None,
+        typer.Option(
+            "--publish-message",
+            help="Override the publish commit message.",
+        ),
+    ] = None,
+    rate: Annotated[float, typer.Option("--rate", help="Max API calls/sec.")] = 3.0,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
 ) -> None:
     """Render the events table to a static HTML dashboard.
 
-    --publish to a gh-pages branch is not yet wired (lands in v0.1.x).
+    With ``--publish <owner>/<repo>`` the rendered directory is also pushed
+    to that repo's ``gh-pages`` branch (configurable via
+    ``--publish-branch``). The branch is created if missing; otherwise a
+    fresh commit replaces the tree (no incremental patching).
     """
-    if publish:
-        err_console.print(
-            "--publish is not yet wired. For now, render with --out and push the "
-            "resulting directory to gh-pages yourself."
-        )
-        raise typer.Exit(2)
-
-    from tacon.dashboard import render
+    from tacon.dashboard import PublishError, publish_to_gh_pages, render
 
     out_dir = out or (Path.cwd() / "tacon-dashboard")
     db = open_db(db_path or _default_db_path())
@@ -606,6 +621,33 @@ def dashboard(
         f"{stats['repos']} repos to [bold]{out_dir}[/bold]"
     )
     console.print(f"[dim]open {out_dir}/index.html in your browser[/dim]")
+
+    if not publish:
+        return
+
+    gh = RateLimitedClient(rate_per_sec=rate)
+    try:
+        result = publish_to_gh_pages(
+            gh,
+            publish,
+            out_dir,
+            branch=publish_branch,
+            commit_message=publish_message,
+        )
+    except PublishError as exc:
+        err_console.print(f"--publish: {exc}")
+        raise typer.Exit(2) from exc
+
+    console.print(
+        f"[green]✓[/green] Published {result.files_published} files to "
+        f"[bold]{result.target_repo}@{result.branch}[/bold] "
+        f"({result.branch_status}, commit {result.commit_sha[:8]})"
+    )
+    if result.pages_url:
+        console.print(
+            f"[dim]Pages typically live at[/dim] {result.pages_url} "
+            "[dim](custom CNAMEs differ; first publish can take a minute or two)[/dim]"
+        )
 
 
 # ---------- version ----------

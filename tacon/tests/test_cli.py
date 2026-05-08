@@ -119,11 +119,9 @@ def test_ui_command_constructs_tui_app(tmp_path: Path, monkeypatch) -> None:
     assert captured["db_path"] == db_path
 
 
-def test_dashboard_publish_not_yet_wired_exits_2() -> None:
-    result = runner.invoke(app, ["dashboard", "--publish", "tzun/site"])
-    assert result.exit_code == 2
-    output = (result.stdout or "") + (result.stderr or "")
-    assert "--publish" in output
+# --publish is now wired (v0.2). Behavior tests live in
+# tests/test_dashboard_publish.py — they cover the helper, the CLI wiring,
+# malformed-target-repo errors, and the no-publish-flag regression guard.
 
 
 @patch("tacon.cli.discover_via_csv")
