@@ -65,7 +65,10 @@ git log --oneline | head -5          # confirm the §4.5 version-bump commit is 
 ```
 
 Expected:
-- The §4.5 version-bump commit (`7a9c743`) is the tip of `main`.
+- The latest handoff-doc commit is the tip of `main` locally; the §4.5
+  version-bump commit (`7a9c743`) sits one below it. Five commits may
+  still be unpushed if the user hasn't run `git push origin main` yet
+  — see §7 for the list.
 - 318 unit tests pass (was 300 mid-v0.2; +19 dashboard publish tests,
   -1 stale "not yet wired" CLI test). **18 live unit tests + 1 live
   skip-on-403** pass if `TACON_LIVE=1`. Live tests hit the real GitHub API.
@@ -545,9 +548,12 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
   the Python package + tests + pyproject + plans).
 - **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the
   only branch; the most recent push from prior sessions was `16d168b`.
-  This session adds the §4.7 + §4.3 commits plus four §4.4/§4.5 commits
-  (`e931079`, `5a7b289`, `a19063f`, `7a9c743`); whether they're pushed
-  depends on what you (the user) chose to do.
+  This session adds the §4.7 + §4.3 commits, the four §4.4/§4.5 commits
+  (`e931079`, `5a7b289`, `a19063f`, `7a9c743`), and the handoff doc
+  commit on top — five unpushed at handoff time. The Claude Code
+  permission default blocks pushes to a default branch even on user
+  request; the user expects to push manually with `git push origin main`
+  from a regular shell.
 - **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` (Python 3.13.5).
   Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
   directly. If pytest collection fails on `textual`, re-install dev
@@ -555,7 +561,10 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 - **Default DB path:** `~/.tacon/tacon.db` (overridable via `--db` or
   `TACON_HOME`). Live tests use a per-test `tmp_path` DB; they never
   touch the user's real DB.
-- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-tacon/memory/`
+- **Memory dir:** `/home/tzun/.claude/projects/-home-tzun-repos-gstack-test/memory/`
+  (the parent project dir is `gstack-test`, even though the package source
+  is in the `tacon/` subdir — Claude Code keys the memory dir off the
+  outermost dir Claude was launched from).
 - **`.env`:** at `tacon/.env` (gitignored). Contains the user's GitHub
   PAT plus live-test scope config. **Never read or echo its contents.**
 - **Plans dir:** `tacon/plans/` (tracked). Per-feature eng-review
@@ -580,11 +589,15 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
    - **`twine upload dist/tacon-0.2.0*`** — user-side step; you can
      suggest but not run it. Confirm artifacts: `dist/tacon-0.2.0.tar.gz`
      + `dist/tacon-0.2.0-py3-none-any.whl` already built in `dist/`.
-   - **Push the 4 unpushed commits** (`e931079`, `5a7b289`, `a19063f`,
-     `7a9c743`) to the GitHub remote. Ask first.
+   - **Push the unpushed commits** (`e931079`, `5a7b289`, `a19063f`,
+     `7a9c743`, plus this handoff commit) to the GitHub remote. Note:
+     direct push to `main` is blocked by Claude Code's default
+     permissions — the user needs to run `git push origin main` themselves.
    - **Live e2e for `--publish`** (a §4.4 future extension) — would need
      a sacrificial dashboard-target repo + `TACON_TEST_PAGES_REPO` env
-     var.
+     var. Ask the user first; do NOT aim it at their `<username>.github.io`
+     repo or any classroom test repo (the existing `pre-test-hw-Tzun27`
+     pin would have its branch list polluted by every test run).
 4. Use `/plan-eng-review` for non-trivial new modules; write the plan
    to `plans/<feature>.md`. Otherwise just code.
 5. Periodic commits — small, scoped, with clear `feat/fix/test/docs`
