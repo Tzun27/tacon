@@ -1334,3 +1334,35 @@ def test_default_classroom_used_when_flag_omitted(
     res = runner.invoke(app, ["sync", "--from-csv", str(csv)])
     assert res.exit_code == 0
     assert default_db.exists()
+
+
+# ---------- v0.3 GUI: tacon serve ----------
+
+
+def test_serve_command_calls_run_server_with_flags(monkeypatch) -> None:
+    """`tacon serve --port N --no-open` threads flags into server.run."""
+    captured: dict[str, object] = {}
+
+    def fake_serve(*, port, host, open_browser):  # type: ignore[no-untyped-def]
+        captured["port"] = port
+        captured["host"] = host
+        captured["open_browser"] = open_browser
+
+    monkeypatch.setattr("tacon.server.serve", fake_serve)
+    result = runner.invoke(app, ["serve", "--port", "5755", "--no-open"])
+    assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
+    assert captured == {"port": 5755, "host": "127.0.0.1", "open_browser": False}
+
+
+def test_serve_command_exits_2_when_port_in_use(monkeypatch) -> None:
+    """PortInUseError surfaces as a clean exit-2 message, not a traceback."""
+    from tacon.server import PortInUseError
+
+    def fake_serve(**_kw):  # type: ignore[no-untyped-def]
+        raise PortInUseError("port 5734 on 127.0.0.1 is already in use")
+
+    monkeypatch.setattr("tacon.server.serve", fake_serve)
+    result = runner.invoke(app, ["serve", "--port", "5734", "--no-open"])
+    assert result.exit_code == 2
+    output = (result.stdout or "") + (result.stderr or "")
+    assert "already in use" in output

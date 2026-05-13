@@ -47,9 +47,22 @@ dev = [
     "types-requests",
     "types-PyYAML",
     "textual >= 0.70",
+    # v0.3 GUI stack (mirrored from the [gui] extra so dev installs
+    # cover server + arg_schema tests without `pip install .[gui]`).
+    "fastapi >= 0.110",
+    "uvicorn[standard] >= 0.27",
+    "sse-starlette >= 2.0",
+    "keyring >= 24.0",
+    "httpx >= 0.27",  # for tests/ that exercise the FastAPI app via AsyncClient
 ]
 tui = [
     "textual >= 0.70",
+]
+gui = [
+    "fastapi >= 0.110",
+    "uvicorn[standard] >= 0.27",
+    "sse-starlette >= 2.0",
+    "keyring >= 24.0",
 ]
 
 [project.scripts]

@@ -730,6 +730,60 @@ def dashboard(
         )
 
 
+# ---------- serve (v0.3 GUI) ----------
+
+
+@app.command()
+def serve(
+    port: Annotated[
+        int | None,
+        typer.Option(
+            "--port",
+            help=(
+                "Port to bind. Defaults to the first free port in 5734-5740. "
+                "Errors clearly if the requested port is taken."
+            ),
+        ),
+    ] = None,
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help=(
+                "Host to bind. Defaults to 127.0.0.1 (loopback only). "
+                "The Host-header allowlist (DNS-rebinding defense) only "
+                "accepts localhost / 127.0.0.1 / [::1] regardless."
+            ),
+        ),
+    ] = "127.0.0.1",
+    open_browser: Annotated[
+        bool,
+        typer.Option(
+            "--open/--no-open",
+            help="Open the served URL in the default browser on startup.",
+        ),
+    ] = True,
+) -> None:
+    """Start the local web GUI (v0.3 — currently a skeleton, full UI ships in later commits).
+
+    Runs a FastAPI app on localhost. Press Ctrl-C to stop.
+    """
+    try:
+        from tacon.server import PortInUseError
+        from tacon.server import serve as run_server
+    except ImportError as exc:
+        err_console.print(
+            f"GUI unavailable: {exc}. Install with: pip install 'tacon\\[gui]'"
+        )
+        raise typer.Exit(2) from exc
+
+    try:
+        run_server(port=port, host=host, open_browser=open_browser)
+    except PortInUseError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(2) from exc
+
+
 # ---------- classroom subcommand ----------
 
 
