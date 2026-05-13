@@ -23,6 +23,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from sqlite_utils import Database
 
@@ -132,6 +134,30 @@ class Op(ABC):
         before calling and surfaces a clear error if False.
         """
         return RollbackResult(op_id=op_id, per_repo=[])
+
+    @classmethod
+    def arg_schema(cls) -> type[BaseModel]:
+        """Pydantic model describing this op's ``__init__`` kwargs.
+
+        Powers the v0.3 GUI's auto-generated forms via
+        ``arg_schema().model_json_schema()`` → JSON Schema → React form
+        components. The same model can be used as a request-body type for
+        the FastAPI plan/apply endpoints to get free validation.
+
+        Concrete Ops override this with a Pydantic ``BaseModel`` whose
+        field names match the constructor's keyword args. Defaults +
+        descriptions + types flow through to the form UI. Field
+        descriptions become helper text in the GUI.
+
+        Default: an empty schema (ops without configurable args). The
+        GUI surfaces this as a parameter-less op (just classroom picker
+        + assignment scope + apply button).
+        """
+
+        class EmptyArgs(BaseModel):
+            pass
+
+        return EmptyArgs
 
 
 # ---------- Op registry ----------

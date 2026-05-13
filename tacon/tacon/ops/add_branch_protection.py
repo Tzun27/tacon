@@ -27,6 +27,7 @@ import json
 from typing import TYPE_CHECKING, Any, cast
 
 from github import GithubException, UnknownObjectException
+from pydantic import BaseModel, Field
 
 from tacon import __version__
 from tacon.db import insert_event, list_active_repos, now_iso, update_event_status
@@ -87,6 +88,73 @@ class AddBranchProtection(Op):
             "mode": "write" if self.rule is not None else "report",
             "rule": self.rule.to_dict() if self.rule is not None else None,
         }
+
+    @classmethod
+    def arg_schema(cls) -> type[BaseModel]:
+        """Form schema for both survey + write modes.
+
+        ``rule`` being ``None`` (or all-default) selects survey mode
+        (read-only). Setting any non-default rule field switches to
+        write mode. The GUI surfaces this as a "Set branch protection"
+        verb-card with a rule-builder form; survey mode is its own
+        verb-card that hides the rule fields entirely.
+        """
+
+        class BranchProtectionRuleArgs(BaseModel):
+            required_approving_review_count: int | None = Field(
+                None,
+                description="Required PR review approvals (1-6). Leave blank for no review requirement.",
+                ge=0,
+                le=6,
+            )
+            dismiss_stale_reviews: bool = Field(
+                False,
+                description="Dismiss approvals when new commits are pushed.",
+            )
+            require_code_owner_reviews: bool = Field(
+                False,
+                description="Require approval from a CODEOWNERS-listed owner.",
+            )
+            required_status_checks: list[str] | None = Field(
+                None,
+                description="Status-check contexts that must pass before merge (e.g. ['ci', 'lint']). Empty list / null = no required checks.",
+            )
+            strict_status_checks: bool = Field(
+                False,
+                description="Require branches to be up to date before merging (strict status checks).",
+            )
+            enforce_admins: bool = Field(
+                False,
+                description="Apply this protection to repo admins too.",
+            )
+            allow_force_pushes: bool = Field(
+                False,
+                description="Allow force-pushes to the protected branch.",
+            )
+            allow_deletions: bool = Field(
+                False,
+                description="Allow deletion of the protected branch.",
+            )
+            required_linear_history: bool = Field(
+                False,
+                description="Require a linear (no-merge-commit) history.",
+            )
+
+        class AddBranchProtectionArgs(BaseModel):
+            branch: str | None = Field(
+                None,
+                description="Target branch (e.g. 'main'). Leave blank to use each repo's default branch.",
+            )
+            assignment_id: str | None = Field(
+                None,
+                description="Limit to one assignment_id. Leave blank to target every active repo.",
+            )
+            rule: BranchProtectionRuleArgs | None = Field(
+                None,
+                description="Desired protection rule (write mode). Leave null for read-only survey.",
+            )
+
+        return AddBranchProtectionArgs
 
     # ---------- plan ----------
 

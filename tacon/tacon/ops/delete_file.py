@@ -18,6 +18,7 @@ import json
 from typing import TYPE_CHECKING
 
 from github import GithubException, UnknownObjectException
+from pydantic import BaseModel, Field
 
 from tacon.db import (
     get_events_by_op,
@@ -81,6 +82,26 @@ class DeleteFile(Op):
             "assignment_id": self.assignment_id,
             "via_pr": self.via_pr,
         }
+
+    @classmethod
+    def arg_schema(cls) -> type[BaseModel]:
+        class DeleteFileArgs(BaseModel):
+            path: str = Field(
+                ..., description="Path within each repo to delete (e.g. 'old-readme.md')"
+            )
+            message: str = Field(
+                "tacon: delete file", description="Git commit message for the deletion"
+            )
+            assignment_id: str | None = Field(
+                None,
+                description="Limit to one assignment_id. Leave blank to target every active repo.",
+            )
+            via_pr: bool = Field(
+                False,
+                description="Open a PR per repo instead of pushing directly to the default branch.",
+            )
+
+        return DeleteFileArgs
 
     # ---------- plan ----------
 

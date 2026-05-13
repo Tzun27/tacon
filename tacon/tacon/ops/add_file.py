@@ -24,6 +24,7 @@ import json
 from typing import TYPE_CHECKING
 
 from github import GithubException, UnknownObjectException
+from pydantic import BaseModel, Field
 
 from tacon.db import (
     get_events_by_op,
@@ -98,6 +99,29 @@ class AddFile(Op):
             "assignment_id": self.assignment_id,
             "via_pr": self.via_pr,
         }
+
+    @classmethod
+    def arg_schema(cls) -> type[BaseModel]:
+        class AddFileArgs(BaseModel):
+            path: str = Field(
+                ..., description="Path within each repo (e.g. 'STARTER.md')"
+            )
+            content: str = Field(
+                ..., description="File content (UTF-8). For the CLI this is the body of --content-from."
+            )
+            message: str = Field(
+                "tacon: add file", description="Git commit message"
+            )
+            assignment_id: str | None = Field(
+                None,
+                description="Limit to one assignment_id. Leave blank to target every active repo.",
+            )
+            via_pr: bool = Field(
+                False,
+                description="Open a PR per repo instead of pushing directly to the default branch.",
+            )
+
+        return AddFileArgs
 
     # ---------- plan ----------
 

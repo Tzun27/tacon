@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 
 import yaml
+from pydantic import BaseModel, Field
 
 from tacon.ops import register
 from tacon.ops.add_file import AddFile
@@ -65,6 +66,32 @@ class AddCIWorkflow(AddFile):
             assignment_id=assignment_id,
             via_pr=via_pr,
         )
+
+    @classmethod
+    def arg_schema(cls) -> type[BaseModel]:
+        class AddCIWorkflowArgs(BaseModel):
+            name: str = Field(
+                ...,
+                description="Workflow filename stem (no extension). Restricted charset: letters, digits, dots, dashes, underscores.",
+            )
+            content: str = Field(
+                ...,
+                description="Full workflow YAML. Must parse and have top-level `on:` and `jobs:` blocks.",
+            )
+            message: str | None = Field(
+                None,
+                description="Git commit message. Defaults to 'tacon: add CI workflow' when blank.",
+            )
+            assignment_id: str | None = Field(
+                None,
+                description="Limit to one assignment_id. Leave blank to target every active repo.",
+            )
+            via_pr: bool = Field(
+                False,
+                description="Open a PR per repo instead of pushing directly to the default branch.",
+            )
+
+        return AddCIWorkflowArgs
 
     # ---------- workflow-aware summary ----------
 

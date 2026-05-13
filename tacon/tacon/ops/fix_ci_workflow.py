@@ -26,6 +26,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from github import GithubException, UnknownObjectException
+from pydantic import BaseModel, Field
 
 from tacon.db import (
     get_events_by_op,
@@ -108,6 +109,46 @@ class FixCIWorkflow(Op):
             "assignment_id": self.assignment_id,
             "via_pr": self.via_pr,
         }
+
+    @classmethod
+    def arg_schema(cls) -> type[BaseModel]:
+        """User-facing form schema.
+
+        The runtime ``__init__`` takes a ``Callable[[bytes], bytes | None]``
+        transform, which can't be serialized as a form input. The GUI
+        instead collects a `bump_action` from/to pair (the same shape
+        the CLI accepts via ``--bump-action``), and the server builds
+        ``make_bump_action_transform(from_ref, to_ref)`` before
+        instantiating the op. Other transform kinds (e.g. arbitrary
+        regex replace) would land here as additional fields.
+        """
+
+        class FixCIWorkflowArgs(BaseModel):
+            name: str = Field(
+                ...,
+                description="Workflow filename stem (no extension) under .github/workflows/.",
+            )
+            bump_action_from: str = Field(
+                ...,
+                description="Action ref to replace, e.g. 'actions/checkout@v3'.",
+            )
+            bump_action_to: str = Field(
+                ...,
+                description="Action ref to write, e.g. 'actions/checkout@v4'.",
+            )
+            message: str = Field(
+                "tacon: fix CI workflow", description="Git commit message"
+            )
+            assignment_id: str | None = Field(
+                None,
+                description="Limit to one assignment_id. Leave blank to target every active repo.",
+            )
+            via_pr: bool = Field(
+                False,
+                description="Open a PR per repo instead of pushing directly to the default branch.",
+            )
+
+        return FixCIWorkflowArgs
 
     # ---------- plan ----------
 

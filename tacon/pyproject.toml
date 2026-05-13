@@ -31,6 +31,9 @@ dependencies = [
     "PyYAML >= 6.0",
     # tomllib is stdlib on 3.11+; tomli is the same parser, vendored, for 3.10.
     "tomli >= 2.0; python_version < '3.11'",
+    # Op.arg_schema() returns a pydantic model that drives the v0.3 GUI's
+    # auto-generated forms (and provides runtime validation for the CLI).
+    "pydantic >= 2.0",
 ]
 
 [project.optional-dependencies]
