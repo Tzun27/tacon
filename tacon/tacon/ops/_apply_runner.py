@@ -48,12 +48,21 @@ class WriteOutcome:
     ``pr_number`` and ``pr_branch`` stay ``None`` for direct-write
     outcomes and are set by via-pr writers. The helper threads them
     through to ``events`` and ``RepoApplyResult`` uniformly.
+
+    ``previous_blob_sha`` is the blob sha of the file BEFORE the write.
+    AddFile leaves it ``None`` (there was nothing before); DeleteFile
+    leaves it ``None`` (``applied_blob_sha`` already captures the
+    deleted blob); FixCIWorkflow sets it (the pre-patch blob sha, so
+    rollback can restore the prior content without walking to the
+    apply commit's parent). Schema v4 added the column; only persisted
+    to ``events.previous_blob_sha`` when non-None.
     """
 
     commit_sha: str
     blob_sha: str
     pr_number: int | None = None
     pr_branch: str | None = None
+    previous_blob_sha: str | None = None
 
 
 DirectWriter = Callable[["RateLimitedClient", RepoDiff], "WriteOutcome | None"]
@@ -202,6 +211,7 @@ def run_per_repo_apply(
             applied_at=now_iso(),
             pr_number=outcome.pr_number,
             pr_branch=outcome.pr_branch,
+            previous_blob_sha=outcome.previous_blob_sha,
         )
         result.per_repo.append(
             RepoApplyResult(

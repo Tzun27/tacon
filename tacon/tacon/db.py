@@ -10,6 +10,11 @@ Schema versioning lives in the `meta` table. Migration history:
   v3 (tacon 0.2.0) — added events.prior_state_json for snapshot+restore
                      rollback of admin ops (AddBranchProtection write
                      mode). Nullable; pre-v3 rows stay valid.
+  v4 (tacon 0.2.1) — added events.previous_blob_sha. FixCIWorkflow apply
+                     records the pre-patch blob sha so rollback can
+                     restore it without walking to the apply commit's
+                     parent. Nullable; pre-v4 rollbacks fall back to the
+                     parent-walk path.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from typing import Any, cast
 from sqlite_utils import Database
 from sqlite_utils.db import Table
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _t(db: Database, name: str) -> Table:
@@ -123,6 +128,7 @@ def init_db(db: Database) -> None:
                 "pr_number": int,
                 "pr_branch": str,
                 "prior_state_json": str,
+                "previous_blob_sha": str,
             },
             pk="id",
             not_null={
@@ -165,6 +171,7 @@ def init_db(db: Database) -> None:
 
     _migrate_to_v2(db)
     _migrate_to_v3(db)
+    _migrate_to_v4(db)
 
 
 def _migrate_to_v2(db: Database) -> None:
@@ -202,6 +209,22 @@ def _migrate_to_v3(db: Database) -> None:
     cols = {c.name for c in _t(db, "events").columns}
     if "prior_state_json" not in cols:
         _t(db, "events").add_column("prior_state_json", str)
+    # NOTE: meta.schema_version is bumped by _migrate_to_v4 (the current
+    # latest). See _migrate_to_v2 for the rationale on per-migration scope.
+
+
+def _migrate_to_v4(db: Database) -> None:
+    """v3 → v4 (schema): add events.previous_blob_sha.
+
+    FixCIWorkflow apply records the pre-patch blob sha here so rollback
+    can restore the prior content without walking to the apply commit's
+    parent (saves 1-2 API calls per rolled-back repo). Other ops leave it
+    NULL. Pre-v4 events without the cached sha fall back to the
+    parent-commit walk. Idempotent via the cols-set guard.
+    """
+    cols = {c.name for c in _t(db, "events").columns}
+    if "previous_blob_sha" not in cols:
+        _t(db, "events").add_column("previous_blob_sha", str)
     if get_schema_version(db) < SCHEMA_VERSION:
         _t(db, "meta").insert(
             {"key": "schema_version", "value": str(SCHEMA_VERSION)},
@@ -332,6 +355,7 @@ def insert_event(
     pr_number: int | None = None,
     pr_branch: str | None = None,
     prior_state_json: str | None = None,
+    previous_blob_sha: str | None = None,
 ) -> str:
     eid = new_uuid()
     _t(db, "events").insert(
@@ -354,6 +378,7 @@ def insert_event(
             "pr_number": pr_number,
             "pr_branch": pr_branch,
             "prior_state_json": prior_state_json,
+            "previous_blob_sha": previous_blob_sha,
         }
     )
     return eid
@@ -373,6 +398,7 @@ def update_event_status(
     pr_number: int | None = None,
     pr_branch: str | None = None,
     prior_state_json: str | None = None,
+    previous_blob_sha: str | None = None,
 ) -> None:
     updates: dict[str, Any] = {"status": status}
     if commit_sha is not None:
@@ -393,6 +419,8 @@ def update_event_status(
         updates["pr_branch"] = pr_branch
     if prior_state_json is not None:
         updates["prior_state_json"] = prior_state_json
+    if previous_blob_sha is not None:
+        updates["previous_blob_sha"] = previous_blob_sha
     _t(db, "events").update(event_id, updates)
 
 

@@ -47,6 +47,13 @@ def _commit(sha: str = "commit-1", parent_sha: str | None = "parent-1") -> Magic
     return c
 
 
+def _blob(body: bytes) -> MagicMock:
+    """Mock a git blob object returned by repo.get_git_blob."""
+    b = MagicMock(name="GitBlob")
+    b.content = base64.b64encode(body).decode("ascii")
+    return b
+
+
 def _missing() -> UnknownObjectException:
     return UnknownObjectException(404, {"message": "Not Found"}, {})
 
@@ -240,9 +247,11 @@ def _setup_apply(
     }
 
 
-def test_rollback_reverts_via_parent_commit(
+def test_rollback_uses_cached_previous_blob_sha_fast_path(
     tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
 ) -> None:
+    """Schema v4: apply records previous_blob_sha; rollback fetches the blob
+    directly via repo.get_git_blob — no parent-commit walk needed."""
     _setup_apply(fake_repo)
     op = FixCIWorkflow(
         name="ci",
@@ -252,11 +261,62 @@ def test_rollback_reverts_via_parent_commit(
     diff = op.plan(tmp_db, fake_gh)
     apply_result = op.apply(tmp_db, fake_gh, diff, confirm=lambda _r: True)
 
-    # Configure rollback flow:
+    # Rollback flow on the fast path:
     #   1. get_contents(path) -> current file with sha == applied (matches, safe)
-    #   2. get_commit(commit_sha) -> commit with parent
-    #   3. get_contents(path, ref=parent_sha) -> old file
-    #   4. update_file(...) writes the old content back
+    #   2. get_git_blob(previous_blob_sha) -> blob with OLD_WORKFLOW content
+    #   3. update_file(...) writes the old content back
+    # No get_commit / parent-walk get_contents required.
+    fake_repo.get_contents.side_effect = None
+    fake_repo.get_contents.return_value = _content_file("new-blob", NEW_WORKFLOW)
+    fake_repo.get_git_blob.return_value = _blob(OLD_WORKFLOW)
+    fake_repo.update_file.return_value = {
+        "commit": _commit("revert-commit", parent_sha="apply-commit"),
+        "content": _content_file("revert-blob", OLD_WORKFLOW),
+    }
+
+    result = FixCIWorkflow.rollback(tmp_db, fake_gh, apply_result.op_id)
+
+    assert all(r.status == "rolled_back" for r in result.per_repo)
+    # Each repo's revert wrote the OLD_WORKFLOW bytes
+    update_calls = [
+        c for c in fake_repo.update_file.call_args_list if "Revert" in c.args[1]
+    ]
+    assert len(update_calls) == 3
+    for call in update_calls:
+        assert call.args[2] == OLD_WORKFLOW
+
+    # Fast path: get_git_blob was used, parent walk wasn't.
+    assert fake_repo.get_git_blob.called
+    assert not fake_repo.get_commit.called
+
+    # And the apply event stored previous_blob_sha for use here.
+    events = get_events_by_op(tmp_db, apply_result.op_id)
+    assert all(e["previous_blob_sha"] == "orig-blob" for e in events)
+    assert all(e["status"] == "rolled_back" for e in events)
+
+
+def test_rollback_falls_back_to_parent_walk_for_pre_v4_events(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """Backwards compat: events with NULL previous_blob_sha (pre-v0.2.1
+    apply runs against a v3 DB) still revert via the parent-commit walk."""
+    _setup_apply(fake_repo)
+    op = FixCIWorkflow(
+        name="ci",
+        transform=make_bump_action_transform("actions/checkout@v3", "actions/checkout@v4"),
+        transform_id="bump-v3-v4",
+    )
+    diff = op.plan(tmp_db, fake_gh)
+    apply_result = op.apply(tmp_db, fake_gh, diff, confirm=lambda _r: True)
+
+    # Simulate pre-v4 events by clearing the cached sha. (Real pre-v4 events
+    # would have NULL because the column didn't exist when they were
+    # written; after the v4 migration the column is NULL for them.)
+    tmp_db.execute(
+        "UPDATE events SET previous_blob_sha = NULL WHERE op_id = ?",
+        [apply_result.op_id],
+    )
+
     def get_contents_side_effect(*args, **kwargs):
         if "ref" in kwargs and kwargs["ref"] == "parent-1":
             return _content_file("orig-blob", OLD_WORKFLOW)
@@ -273,13 +333,9 @@ def test_rollback_reverts_via_parent_commit(
     result = FixCIWorkflow.rollback(tmp_db, fake_gh, apply_result.op_id)
 
     assert all(r.status == "rolled_back" for r in result.per_repo)
-    # The bytes written by the revert update_file must equal OLD_WORKFLOW
-    update_calls = [
-        c for c in fake_repo.update_file.call_args_list if "Revert" in c.args[1]
-    ]
-    assert len(update_calls) == 3
-    for call in update_calls:
-        assert call.args[2] == OLD_WORKFLOW
+    # Slow path: get_commit + parent-walk get_contents both called.
+    assert fake_repo.get_commit.called
+    assert not fake_repo.get_git_blob.called
 
     events = get_events_by_op(tmp_db, apply_result.op_id)
     assert all(e["status"] == "rolled_back" for e in events)

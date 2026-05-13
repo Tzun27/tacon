@@ -214,17 +214,27 @@ class FixCIWorkflow(Op):
         outcome = self._patch(gh, repo_diff.repo_id)
         if outcome is None:
             return None  # signals race-skip to the helper
-        commit_sha, blob_sha = outcome
-        return WriteOutcome(commit_sha=commit_sha, blob_sha=blob_sha)
+        commit_sha, blob_sha, prev_blob_sha = outcome
+        return WriteOutcome(
+            commit_sha=commit_sha,
+            blob_sha=blob_sha,
+            previous_blob_sha=prev_blob_sha,
+        )
 
     def _patch(
         self, gh: RateLimitedClient, repo_id: str, *, branch: str | None = None
-    ) -> tuple[str, str] | None:
-        """Returns (commit_sha, new_blob_sha) on patch, or None if nothing to do.
+    ) -> tuple[str, str, str] | None:
+        """Returns (commit_sha, new_blob_sha, prev_blob_sha) on patch, or None.
 
         ``branch=None`` (default) targets the repo's default branch (existing
         v0.1 behavior). When set, get_contents and update_file both run
         against the named branch — used by ``--via-pr`` mode.
+
+        ``prev_blob_sha`` is the blob sha of the workflow file BEFORE the
+        patch (i.e. ``current.sha`` at apply time). It's persisted to
+        ``events.previous_blob_sha`` (schema v4) so rollback can fetch the
+        prior content via a single ``get_git_blob`` call instead of walking
+        to the apply commit's parent.
         """
         repo = gh.get_repo(repo_id)
         get_kwargs: dict[str, object] = {}
@@ -235,6 +245,7 @@ class FixCIWorkflow(Op):
         new_bytes = self.transform(old_bytes)
         if new_bytes is None or new_bytes == old_bytes:
             return None
+        prev_blob_sha = current.sha
         update_kwargs: dict[str, object] = {}
         if branch is not None:
             update_kwargs["branch"] = branch
@@ -248,7 +259,7 @@ class FixCIWorkflow(Op):
         )
         commit = resp["commit"]
         content = resp["content"]
-        return commit.sha, content.sha
+        return commit.sha, content.sha, prev_blob_sha
 
     def _apply_via_pr(
         self,
@@ -273,7 +284,7 @@ class FixCIWorkflow(Op):
         patch_outcome = self._patch(gh, repo_diff.repo_id, branch=branch_name)
         if patch_outcome is None:
             return None
-        commit_sha, blob_sha = patch_outcome
+        commit_sha, blob_sha, prev_blob_sha = patch_outcome
         pr_number = open_or_find_pr(
             gh,
             repo,
@@ -287,6 +298,7 @@ class FixCIWorkflow(Op):
             blob_sha=blob_sha,
             pr_number=pr_number,
             pr_branch=branch_name,
+            previous_blob_sha=prev_blob_sha,
         )
 
     # ---------- rollback ----------
@@ -320,6 +332,7 @@ class FixCIWorkflow(Op):
                         event["applied_blob_sha"],
                         event["commit_sha"],
                         revert_message,
+                        previous_blob_sha=event.get("previous_blob_sha"),
                     )
             except GithubException as exc:
                 err_class = classify_error(exc)
@@ -366,7 +379,20 @@ class FixCIWorkflow(Op):
         applied_blob_sha: str | None,
         commit_sha: str | None,
         message: str,
+        *,
+        previous_blob_sha: str | None = None,
     ) -> RepoRollbackResult:
+        """Restore the workflow file to its pre-patch content.
+
+        Two paths to the prior blob:
+
+        - **Fast path (schema v4+).** If ``previous_blob_sha`` is set,
+          fetch the blob directly via ``repo.get_git_blob``. One API
+          call instead of two.
+        - **Fallback (pre-v4 events).** Walk to the apply commit's
+          parent and re-read the file. Two API calls plus a 404 risk if
+          the file didn't exist before the apply.
+        """
         repo = gh.get_repo(repo_id)
 
         if not applied_blob_sha or not commit_sha:
@@ -397,33 +423,46 @@ class FixCIWorkflow(Op):
                 ),
             )
 
-        # Reconstruct the prior content from the parent of the apply commit.
-        # Git preserves blobs reachable from any commit, so this is well-defined.
-        apply_commit = gh.call(repo.get_commit, commit_sha)
-        parents = getattr(apply_commit, "parents", []) or []
-        if not parents:
-            return RepoRollbackResult(
-                repo_id=repo_id,
-                status="failed",
-                error_message=f"apply commit {commit_sha} has no parent; cannot revert",
-            )
-        parent_sha = parents[0].sha
-        try:
-            prior = gh.call(repo.get_contents, path, ref=parent_sha)
-        except UnknownObjectException:
-            # The file did NOT exist before our apply. That means our apply
-            # was effectively a create, not a fix — full revert means delete.
-            # FixCIWorkflow only patches; it never creates. So this state means
-            # someone replayed an apply onto a delete. Best-effort: refuse.
-            return RepoRollbackResult(
-                repo_id=repo_id,
-                status="failed",
-                error_message=(
-                    f"file did not exist at parent commit {parent_sha[:8]}; "
-                    "FixCIWorkflow rollback can't infer create-vs-update history"
-                ),
-            )
-        prior_bytes = base64.b64decode(getattr(prior, "content", "") or "")
+        if previous_blob_sha:
+            # Fast path: blob still reachable in the object store because the
+            # apply commit references it as its parent's file.
+            blob = gh.call(repo.get_git_blob, previous_blob_sha)
+            try:
+                prior_bytes = base64.b64decode(getattr(blob, "content", "") or "")
+            except (ValueError, TypeError) as e:
+                return RepoRollbackResult(
+                    repo_id=repo_id,
+                    status="failed",
+                    error_message=f"could not decode blob {previous_blob_sha}: {e}",
+                )
+        else:
+            # Fallback for pre-v4 events: walk to the parent of the apply
+            # commit and re-read the file there.
+            apply_commit = gh.call(repo.get_commit, commit_sha)
+            parents = getattr(apply_commit, "parents", []) or []
+            if not parents:
+                return RepoRollbackResult(
+                    repo_id=repo_id,
+                    status="failed",
+                    error_message=f"apply commit {commit_sha} has no parent; cannot revert",
+                )
+            parent_sha = parents[0].sha
+            try:
+                prior = gh.call(repo.get_contents, path, ref=parent_sha)
+            except UnknownObjectException:
+                # The file did NOT exist before our apply. That means our apply
+                # was effectively a create, not a fix — full revert means delete.
+                # FixCIWorkflow only patches; it never creates. So this state
+                # means someone replayed an apply onto a delete. Best-effort: refuse.
+                return RepoRollbackResult(
+                    repo_id=repo_id,
+                    status="failed",
+                    error_message=(
+                        f"file did not exist at parent commit {parent_sha[:8]}; "
+                        "FixCIWorkflow rollback can't infer create-vs-update history"
+                    ),
+                )
+            prior_bytes = base64.b64decode(getattr(prior, "content", "") or "")
 
         resp = gh.call(repo.update_file, path, message, prior_bytes, current_sha)
         revert_sha = resp["commit"].sha if resp.get("commit") else None

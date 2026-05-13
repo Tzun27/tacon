@@ -479,3 +479,148 @@ def test_v3_partial_state_recovers(tmp_path: Path) -> None:
     cols = {c.name for c in migrated["events"].columns}
     assert "prior_state_json" in cols
     assert get_schema_version(migrated) == SCHEMA_VERSION
+
+
+# ---------- schema v4 (events.previous_blob_sha) ----------
+
+
+def test_schema_v4_column_present_on_fresh_db(tmp_path: Path) -> None:
+    """A new DB is built straight at v4: events table includes previous_blob_sha."""
+    db = open_db(tmp_path / "fresh.db")
+    cols = {c.name for c in db["events"].columns}
+    assert "previous_blob_sha" in cols
+
+
+def test_insert_event_persists_previous_blob_sha(
+    tmp_db: Database, seed_repos
+) -> None:
+    """AddFile/DeleteFile leave previous_blob_sha NULL; FixCIWorkflow sets it."""
+    eid_addfile = insert_event(
+        tmp_db,
+        op_id="op-add",
+        op_class="add_file",
+        op_args_json='{"path":"X"}',
+        tacon_version="0.2.1",
+        repo_id="cs101/alice-hw3",
+        student_id="alice",
+        status="applied",
+    )
+    eid_fix = insert_event(
+        tmp_db,
+        op_id="op-fix",
+        op_class="fix_ci_workflow",
+        op_args_json='{"path":".github/workflows/ci.yml"}',
+        tacon_version="0.2.1",
+        repo_id="cs101/bob-hw3",
+        student_id="bob",
+        status="applied",
+        previous_blob_sha="abc123pre",
+    )
+    addfile = tmp_db["events"].get(eid_addfile)
+    fix = tmp_db["events"].get(eid_fix)
+    assert addfile["previous_blob_sha"] is None
+    assert fix["previous_blob_sha"] == "abc123pre"
+
+
+def test_v3_db_migrates_to_v4_in_place(tmp_path: Path) -> None:
+    """Open a v3-shaped DB, run init_db, confirm previous_blob_sha is added
+    and the schema version bumps without touching existing rows."""
+    p = tmp_path / "v3.db"
+    raw = Database(str(p))
+    raw["meta"].create({"key": str, "value": str}, pk="key")
+    raw["meta"].insert({"key": "schema_version", "value": "3"})
+    # v3 events table — has prior_state_json but NOT previous_blob_sha.
+    raw["events"].create(
+        {
+            "id": str,
+            "op_id": str,
+            "op_class": str,
+            "op_args_json": str,
+            "tacon_version": str,
+            "repo_id": str,
+            "student_id": str,
+            "status": str,
+            "commit_sha": str,
+            "applied_blob_sha": str,
+            "error_class": str,
+            "error_message": str,
+            "created_at": str,
+            "applied_at": str,
+            "rolled_back_at": str,
+            "pr_number": int,
+            "pr_branch": str,
+            "prior_state_json": str,
+        },
+        pk="id",
+    )
+    raw["events"].insert(
+        {
+            "id": "v3-row",
+            "op_id": "old-op",
+            "op_class": "fix_ci_workflow",
+            "op_args_json": "{}",
+            "tacon_version": "0.2.0",
+            "repo_id": "cs101/alice-hw3",
+            "student_id": "alice",
+            "status": "applied",
+            "commit_sha": "deadbeef",
+            "applied_blob_sha": "blob2",
+            "error_class": None,
+            "error_message": None,
+            "created_at": "2026-05-08T00:00:00Z",
+            "applied_at": "2026-05-08T00:00:01Z",
+            "rolled_back_at": None,
+            "pr_number": None,
+            "pr_branch": None,
+            "prior_state_json": None,
+        }
+    )
+    raw.conn.close()
+
+    migrated = open_db(p)
+    cols = {c.name for c in migrated["events"].columns}
+    assert "previous_blob_sha" in cols
+    assert get_schema_version(migrated) == SCHEMA_VERSION
+    legacy = migrated["events"].get("v3-row")
+    # Pre-v4 row stays valid; the new column is NULL.
+    assert legacy["status"] == "applied"
+    assert legacy["applied_blob_sha"] == "blob2"
+    assert legacy["previous_blob_sha"] is None
+
+
+def test_v4_migration_is_re_runnable(tmp_path: Path) -> None:
+    """Running open_db twice on a v4 DB is a no-op (idempotency)."""
+    p = tmp_path / "v4.db"
+    open_db(p)
+    db2 = open_db(p)
+    cols = {c.name for c in db2["events"].columns}
+    assert "previous_blob_sha" in cols
+    assert get_schema_version(db2) == SCHEMA_VERSION
+    rows = list(db2["meta"].rows_where("key = ?", ("schema_version",)))
+    assert len(rows) == 1
+    assert rows[0]["value"] == str(SCHEMA_VERSION)
+
+
+def test_v4_partial_state_recovers(tmp_path: Path) -> None:
+    """previous_blob_sha was added but meta wasn't bumped past v3.
+    Next open_db should observe the column + finish bumping."""
+    p = tmp_path / "v4-partial.db"
+    raw = Database(str(p))
+    raw["meta"].create({"key": str, "value": str}, pk="key")
+    raw["meta"].insert({"key": "schema_version", "value": "3"})
+    raw["events"].create(
+        {
+            "id": str, "op_id": str, "op_class": str, "op_args_json": str,
+            "tacon_version": str, "repo_id": str, "student_id": str,
+            "status": str, "created_at": str,
+            "pr_number": int, "pr_branch": str,
+            "prior_state_json": str, "previous_blob_sha": str,
+        },
+        pk="id",
+    )
+    raw.conn.close()
+
+    migrated = open_db(p)
+    cols = {c.name for c in migrated["events"].columns}
+    assert "previous_blob_sha" in cols
+    assert get_schema_version(migrated) == SCHEMA_VERSION
