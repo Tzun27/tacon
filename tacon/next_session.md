@@ -1,12 +1,13 @@
-# Next session — pick up tacon after v0.2.x
+# Next session — pick up tacon mid-v0.3
 
 You (the next agent) are continuing work on **tacon**, a TA workbench for
-GitHub Classroom. **v0.2.0 fully shipped**, plus three follow-ups
-landed since: **§4.9 (apply-method DRY refactor)**, **§4.8 (schema v4
-+ FixCIWorkflow rollback fast-path)**, and **§4.6 (multi-classroom
-config)**. Every numbered roadmap item from §4 has been ticked off. See
--1 below for the commit-by-commit story. The natural next moves are
-docs polish, twine upload, or starting a v0.3 scope conversation.
+GitHub Classroom. **v0.2.0 fully shipped** + the three v0.2.x follow-ups
+(§4.6 / §4.8 / §4.9). **v0.3 just started**: a local web GUI
+(`tacon serve`) for TAs who don't want to use the CLI. The design doc
+lives at `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md`
+(produced via `/office-hours`, survived 2 rounds of adversarial review
+at 8/10). **Steps 0 + 1 of the build order have shipped** — see -1
+below. **Steps 2-11 remain.** See §9 for the v0.3 roadmap.
 
 This file is your handoff. **Read it top-to-bottom before doing anything
 else.** §-1 (what shipped this session) and §4 (what's left) are the
@@ -53,12 +54,11 @@ two parts you can't skip.
 | `9e2d9a4` | §4.8 | **Schema v4 + FixCIWorkflow rollback fast-path** — adds `events.previous_blob_sha` (idempotent `_migrate_to_v4` mirroring v2/v3). FixCIWorkflow apply records the pre-patch blob sha; rollback prefers it and fetches via `repo.get_git_blob` (1 call) instead of `get_commit` + `get_contents(ref=parent)` (2 calls + 404 risk). Falls back to the parent walk for pre-v4 events. `WriteOutcome.previous_blob_sha` is the new field; AddFile/DeleteFile leave it None. 6 new tests. |
 | `7574710` | §4.6 | **Multi-classroom config** — new `tacon/classes.py` (load/save/resolve `~/.tacon/classes.toml`). CLI gains a global `--classroom <id>` option threaded through every existing command + a `tacon classroom list/add/set-default` subcommand group. DB-path precedence: `--db` > `--classroom` > default-in-classes.toml > legacy `~/.tacon/tacon.db`. Opt-in: missing classes.toml = exact legacy behavior. Adds conditional `tomli` dep for Python 3.10; TOML writer is hand-rolled. |
 | `a878743` | §4.6 | **Tests for classes.py + CLI classroom integration** — 21 unit tests (parse paths, error paths, add/set-default semantics, resolve_db_path precedence) + 10 CLI integration tests (subcommand surface, --classroom flag wiring, --db beats --classroom, default auto-resolution). A `tacon_home` fixture isolates `TACON_HOME` per test so classes.toml writes never escape `tmp_path`. |
+| `ec6d384` | v0.3 Step 0 | **`Op.arg_schema()` classmethod** — Pydantic model per Op describing `__init__` kwargs. Powers the v0.3 GUI's auto-generated forms via `.model_json_schema()` → React. AddFile/DeleteFile/AddCIWorkflow/FixCIWorkflow/AddBranchProtection all implement. FixCIWorkflow's runtime Callable transform is replaced in the schema by a `bump_action_from` + `bump_action_to` pair (same shape the CLI uses). AddBranchProtection embeds the rule shape as a nested optional model (None = survey). Adds `pydantic >= 2.0` to base deps. 10 new tests. |
+| `b2c2318` | v0.3 Step 1 | **`tacon serve` skeleton** — new `tacon/server.py` with FastAPI app factory, host-header allowlist middleware (DNS-rebinding defense; localhost / 127.0.0.1 / [::1] only), free-port picker that walks 5734-5740, uvicorn launcher, and a `/healthz` route. New CLI: `tacon serve [--port N] [--host H] [--open/--no-open]`. New `tacon[gui]` extra (fastapi, uvicorn, sse-starlette, keyring). Dev extra mirrors it plus httpx for FastAPI testing. 13 new tests. |
 
-**All nine v0.2 items shipped**: §4.1 (resume), §4.2 (`--via-pr`), §4.3
-(AddBranchProtection write mode), §4.4 (dashboard `--publish`),
-§4.5 (PyPI prep + version bump), §4.6 (multi-classroom config),
-§4.7 (live e2e for the remaining ops), §4.8 (schema v4 + FixCIWorkflow
-fast-path), §4.9 (apply-method DRY refactor). Nothing on §4 is open.
+**All nine v0.2 items shipped** (§4.1-§4.9). **v0.3 in progress**: Steps
+0 + 1 done, Steps 2-11 remaining (see §9 below).
 
 ---
 
@@ -73,15 +73,15 @@ git log --oneline | head -5          # confirm the §4.5 version-bump commit is 
 ```
 
 Expected:
-- The tip of `main` is the latest handoff-doc commit (this one). The
-  four §4.6 + §4.8 commits (`9e2d9a4`, `7574710`, `a878743`, plus this)
-  sit above the §4.9 trio. All commits at and below the handoff doc
-  are already pushed to `origin/main`.
-- **355 unit tests pass** (+31 since the last handoff: §4.8 added 6,
-  §4.6 added 25). **18 live unit tests + 1 live skip-on-403** pass if
-  `TACON_LIVE=1`. Live tests hit the real GitHub API.
-- Coverage stays above 90% (gate). ruff + mypy clean across **22 source
-  files** (+1 `tacon/classes.py` since the §4.9 handoff).
+- The tip of `main` is the latest handoff-doc commit (this one). The two
+  v0.3 commits (`ec6d384`, `b2c2318`) sit above the v0.2.x commits.
+  Most of the v0.2.x work is already pushed to `origin/main`; the v0.3
+  commits + this handoff are unpushed at handoff time.
+- **378 unit tests pass** (+23 since the §4.6/§4.8 handoff: Step 0 added
+  10 arg_schema tests; Step 1 added 13 server + CLI serve tests). 18
+  live unit tests + 1 live skip-on-403 still pass if `TACON_LIVE=1`.
+- Coverage stays above 90% (gate). ruff + mypy clean across **23 source
+  files** (+1 `tacon/server.py` since the §4.6 handoff).
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -659,36 +659,94 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 
 ---
 
+## 9 · v0.3 GUI roadmap (where you pick up)
+
+**Design doc:** `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md`
+— survived 2 rounds of adversarial review at 8/10. Read this end-to-end
+before touching code. Key sections:
+
+- **"Op Schema → Form Bridge"** explains how `Op.arg_schema()` (already
+  implemented) feeds JSON Schema to the React form generator. Step 5.5
+  builds the renderer that consumes it.
+- **"Sub-scope for v0.3"** lists the 7 in-scope feature areas.
+- **"Out of scope for v0.3"** lists what to push to v0.3.1/v0.4. Audit-
+  trail browser deferred. AI-assist deferred. Dark mode toggle deferred.
+- **"Reviewer Concerns"** — the one persisted concern: the "Update CI
+  workflow" card's mode-toggle default needs TA usability validation
+  before split-into-two-cards decision.
+
+**Build order — Steps 0 + 1 done; 2-11 remain.** Estimated 70 hours total
+(see Next Steps in the design doc for the per-step breakdown).
+
+| Step | Status | Title | Estimated |
+|---|---|---|---|
+| 0 | ✅ DONE (`ec6d384`) | Op.arg_schema() on all 5 ops | 2.5h |
+| 1 | ✅ DONE (`b2c2318`) | tacon serve skeleton (FastAPI + CLI) | 4h |
+| 2 | NEXT | API: op listing + plan/apply/rollback + SSE | 10h |
+| 3 | | Vite + React + shadcn scaffold | 3h |
+| 4 | | Settings page first | 5h |
+| 5 | | Verb-card home screen | 3h |
+| 5.5 | | Schema-driven form renderer | 6h |
+| 6 | | One op end-to-end: AddFile spine | 24h |
+| 7 | | Rest of ops onto the spine | 6h |
+| 8 | | Past ops list + rollback UX | 4h |
+| 9 | | Polish (loading/empty/error states, theme) | 3h |
+| 10 | | CI/CD: build SPA in GitHub Actions | 3h |
+| 11 | | Release v0.3.0 | 1h |
+
+**Step 2 is the natural next pickup.** Concretely: add `GET /api/ops`,
+`POST /api/ops/{name}/plan`, `POST /api/ops/{name}/apply` (background
+task), `POST /api/ops/{op_id}/rollback`, and `GET /api/events?op_id=X&last_event_id=Y`
+(SSE with cursor). All 5 op classes are already exposable via their
+`arg_schema()`. See design doc Step 2 for the exact SSE protocol + event
+payload schema + acceptance criteria.
+
+**The single-flight lock** (`asyncio.Lock()` in `tacon/server.py`) lands
+in Step 2 as well — apply/rollback acquire it; concurrent attempts get
+409. Startup sweep marks orphan `in-progress` rows as `failed`.
+
+**Open Question still unanswered:** v0.3.0 version bump strategy.
+Default plan: bump to `0.3.0.dev0` at the start of Step 2 to signal
+in-development, then `0.3.0` at Step 11. Confirm with the user before
+the first bump.
+
+**Don't skip the assignment from the design doc:** *"Before writing
+tacon/server.py: draft the 5 verb-cards in plain Markdown and show them
+to one non-technical TA."* This was already partially done (Step 1
+shipped — the assignment specifically applies to the verb-cards which
+land in Step 5). It's worth doing before Step 5 even if Step 2 is the
+literal next coding step.
+
+---
+
 ## 8 · TL;DR for the impatient
 
 1. Run `pytest -q --no-cov --ignore=tests/live`, `ruff check .`,
    `mypy tacon` to confirm nothing broke since the handoff. Expect
-   **355 unit tests passing** (+18 live tests + 1 skip-on-403 if
-   `TACON_LIVE=1`), ruff clean, mypy clean across **22 source files**.
-2. **All of §4 is done.** Nine v0.2 items shipped: §4.1–§4.9 with the
-   exception of nothing. The roadmap is empty. Default move: **ask the
-   user what they want next** (PyPI upload? v0.3 brainstorm? a specific
-   bug or feature request?).
-3. **Possible immediate-next moves** if the user wants action:
-   - **`twine upload dist/tacon-0.2.0*`** — user-side step; you can
-     suggest but not run it. Confirm artifacts: `dist/tacon-0.2.0.tar.gz`
-     + `dist/tacon-0.2.0-py3-none-any.whl` already built in `dist/`.
-     Note: §4.6 + §4.8 + §4.9 shipped *after* the 0.2.0 build, so the
-     user may want to bump to 0.2.1 and rebuild before uploading.
-   - **Push the unpushed commits** — three sit above `origin/main` plus
-     this handoff commit (§4.8 `9e2d9a4`, §4.6 `7574710`, §4.6 tests
-     `a878743`). Direct push to `main` is blocked by Claude Code's
-     default permissions — the user runs `git push origin main`.
-   - **Bump to 0.2.1** — §4.6 + §4.8 + §4.9 are real user-visible
-     changes (schema bump, new CLI surface) that justify a point
-     release. One-line edits in `tacon/__init__.py` + `pyproject.toml`.
-   - **Live e2e for `--publish`** (a §4.4 future extension) — would need
-     a sacrificial dashboard-target repo + `TACON_TEST_PAGES_REPO` env
-     var. Ask the user first; do NOT aim it at their `<username>.github.io`
-     repo or any classroom test repo (the existing `pre-test-hw-Tzun27`
-     pin would have its branch list polluted by every test run).
-4. Use `/plan-eng-review` for non-trivial new modules; write the plan
-   to `plans/<feature>.md`. Otherwise just code.
-5. Periodic commits — small, scoped, with clear `feat/fix/test/docs`
-   prefixes. The git log so far is the model.
-6. `/context-save` at the end of your session and update this file.
+   **378 unit tests passing** (+18 live tests + 1 skip-on-403 if
+   `TACON_LIVE=1`), ruff clean, mypy clean across **23 source files**.
+2. **v0.3 GUI is in progress.** Read the design doc at
+   `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md`
+   end-to-end. Steps 0 + 1 shipped. Step 2 is the natural next.
+3. **Steps 2-11 are ~63 hours over 3-4 weekends.** Don't try to do it
+   all in one session. Logical milestones: after Step 2 (API), after
+   Step 5.5 (renderer), after Step 6 (AddFile spine — the keystone),
+   after Step 8 (rollback + Past Ops), v0.3.0 release.
+4. **Push unpushed commits** — `ec6d384` (Step 0) and `b2c2318` (Step 1)
+   plus this handoff sit above `origin/main`. Direct push to `main` is
+   blocked by Claude Code's permission default — the user runs
+   `git push origin main` themselves.
+5. **For v0.3 work specifically:** the design doc is the contract. Every
+   step has an acceptance criterion. Honor them — the spec review
+   surfaced 17 gaps that were patched, and skipping the criteria
+   re-opens them.
+6. **Pre-existing TL;DR points still apply:**
+   - **`twine upload dist/tacon-0.2.0*`** — note that §4.6/§4.8/§4.9
+     + v0.3 Steps 0/1 shipped *after* the 0.2.0 build, so user should
+     bump version + rebuild before uploading.
+   - **Bump to 0.2.1 or 0.3.0.dev0** — depending on whether the user
+     wants a v0.2 point release before v0.3 work continues.
+7. Use `/plan-eng-review` for substantial new modules; `/qa` for live
+   GUI testing once a build is shippable; `/review` before each
+   v0.3 milestone commit.
+8. `/context-save` at the end of your session and update this file.
