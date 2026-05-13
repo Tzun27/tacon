@@ -189,6 +189,7 @@ class AddFile(Op):
         gh: RateLimitedClient,
         diff: Diff,
         confirm: ConfirmCallback,
+        op_id: str | None = None,
     ) -> ApplyResult:
         return run_per_repo_apply(
             op_class_name=self.op_class_name,
@@ -200,6 +201,7 @@ class AddFile(Op):
             confirm=confirm,
             direct_write=self._direct_write,
             via_pr_write=self._apply_via_pr,
+            op_id=op_id,
         )
 
     def _direct_write(

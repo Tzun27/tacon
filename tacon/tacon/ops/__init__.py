@@ -123,8 +123,14 @@ class Op(ABC):
         gh: RateLimitedClient,
         diff: Diff,
         confirm: ConfirmCallback,
+        op_id: str | None = None,
     ) -> ApplyResult:
-        """Write. For each non-blocked RepoDiff, call confirm() and act."""
+        """Write. For each non-blocked RepoDiff, call confirm() and act.
+
+        ``op_id`` is generated internally when ``None``. The GUI server
+        passes a pre-generated UUID so it can return ``{op_id}`` to the
+        client before the background apply task starts producing events.
+        """
 
     @classmethod
     def rollback(cls, db: Database, gh: RateLimitedClient, op_id: str) -> RollbackResult:

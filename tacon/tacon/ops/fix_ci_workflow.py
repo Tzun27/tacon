@@ -235,6 +235,7 @@ class FixCIWorkflow(Op):
         gh: RateLimitedClient,
         diff: Diff,
         confirm: ConfirmCallback,
+        op_id: str | None = None,
     ) -> ApplyResult:
         return run_per_repo_apply(
             op_class_name=OP_CLASS,
@@ -247,6 +248,7 @@ class FixCIWorkflow(Op):
             direct_write=self._direct_write,
             via_pr_write=self._apply_via_pr,
             race_skipped_message="transform no longer applies (state changed since plan)",
+            op_id=op_id,
         )
 
     def _direct_write(

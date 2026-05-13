@@ -114,6 +114,29 @@ def test_apply_writes_events_and_records_blob_sha(
     assert all(e["commit_sha"] == "c1" for e in events)
 
 
+def test_apply_uses_provided_op_id_when_given(
+    tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
+) -> None:
+    """The GUI server pre-generates op_id so it can return {op_id} before
+    the background apply task starts firing events. Verify the runner
+    honors the injected id instead of generating its own."""
+    fake_repo.get_contents.side_effect = _missing_file_exc()
+    fake_repo.create_file.return_value = {
+        "commit": _commit("c1"),
+        "content": _content_file("blob-1"),
+    }
+
+    op = AddFile(path="X", content="x")
+    diff = op.plan(tmp_db, fake_gh)
+    injected = "11111111-2222-3333-4444-555555555555"
+    result = op.apply(tmp_db, fake_gh, diff, confirm=lambda _r: True, op_id=injected)
+
+    assert result.op_id == injected
+    events = get_events_by_op(tmp_db, injected)
+    assert len(events) == 3
+    assert all(e["op_id"] == injected for e in events)
+
+
 def test_apply_skips_blocked_without_calling_create(
     tmp_db: Database, seed_repos, fake_gh: MagicMock, fake_repo: MagicMock
 ) -> None:

@@ -291,13 +291,19 @@ class AddBranchProtection(Op):
         gh: RateLimitedClient,
         diff: Diff,
         confirm: ConfirmCallback,
+        op_id: str | None = None,
     ) -> ApplyResult:
         """Apply the rule (write mode) or persist the survey (survey mode).
 
         confirm is honored — declining still records a 'skipped' event so
         users can later see which repos they bypassed.
+
+        ``op_id`` is generated when ``None`` (default for CLI use). The GUI
+        server pre-generates one so it can return ``{op_id}`` before the
+        background apply task starts producing events.
         """
-        op_id = _new_op_id()
+        if op_id is None:
+            op_id = _new_op_id()
         op_args_json = json.dumps(self.args, sort_keys=True)
         result = ApplyResult(op_id=op_id, per_repo=[])
 
