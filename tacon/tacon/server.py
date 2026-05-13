@@ -546,7 +546,7 @@ def _validate_and_build_op(name: str, raw_body: Any) -> Any:
         validated = schema_cls.model_validate(raw_body)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"error": "validation_failed", "issues": exc.errors()},
         ) from exc
 
@@ -554,7 +554,7 @@ def _validate_and_build_op(name: str, raw_body: Any) -> Any:
         return build_op(name, validated.model_dump())
     except OpBuildError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"error": "validation_failed", "message": str(exc)},
         ) from exc
 
@@ -838,7 +838,7 @@ def _resolve_op_class_for_rollback(db_path: Path, op_id: str) -> type[Any]:
         ) from exc
     if not cls.supports_rollback:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"error": "rollback_unsupported", "op_class": op_class_db},
         )
     return cls
