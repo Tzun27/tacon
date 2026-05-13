@@ -217,8 +217,7 @@ def create_app(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, HTTPException, Request, status
-    from fastapi.responses import JSONResponse
+    from fastapi import Body, FastAPI, HTTPException, status
 
     from tacon import __version__
 
@@ -253,33 +252,13 @@ def create_app(
         gh_factory=gh_factory or _default_gh_factory(token, rate_per_sec),
     )
 
-    @app.middleware("http")
-    async def host_header_allowlist(request: Request, call_next):  # type: ignore[no-untyped-def]
-        """Block requests whose Host header isn't on the allowlist.
-
-        Strips an optional ``:<port>`` suffix before comparing so that
-        ``Host: localhost:5734`` still matches ``localhost``.
-        Defense-in-depth against DNS rebinding (the user's browser is
-        the trust boundary, not the network).
-        """
-        raw_host = request.headers.get("host", "")
-        host_only = raw_host.split(":", 1)[0] if ":" in raw_host else raw_host
-        # IPv6 hosts come through with brackets; preserve them.
-        if raw_host.startswith("["):
-            host_only = raw_host.split("]", 1)[0] + "]"
-        if host_only not in _ALLOWED_HOSTS:
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "error": "forbidden_host",
-                    "detail": (
-                        f"Host header {raw_host!r} not on the allowlist. "
-                        "tacon serve only accepts requests addressed to "
-                        "localhost / 127.0.0.1 / [::1]."
-                    ),
-                },
-            )
-        return await call_next(request)
+    # Pure-ASGI host allowlist. Using ``@app.middleware("http")`` would
+    # route through Starlette's BaseHTTPMiddleware, which buffers the
+    # response body and thereby breaks SSE streaming (chunks don't
+    # surface to the client until the response closes). Writing the
+    # check as a pure-ASGI middleware sidesteps the buffering entirely.
+    host_middleware_cls = _build_host_header_middleware()
+    app.add_middleware(host_middleware_cls)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -315,27 +294,33 @@ def create_app(
     # ---------- POST /api/ops/{name}/plan ----------
 
     @app.post("/api/ops/{name}/plan")
-    async def api_plan(name: str, request: Request) -> dict[str, Any]:
+    async def api_plan(
+        name: str,
+        body: dict[str, Any] = Body(default={}),  # noqa: B008
+    ) -> dict[str, Any]:
         """Validate body against the op's arg_schema, run plan(), return Diff."""
         state: _AppState = app.state.tacon
-        db = _open_db_or_503(state)
+        db_path = _db_path_or_503(state)
         gh = _build_gh_or_503(state)
-        op = _validate_and_build_op(name, await request.json())
+        op = _validate_and_build_op(name, body)
 
         loop = asyncio.get_running_loop()
-        diff = await loop.run_in_executor(None, op.plan, db, gh)
+        diff = await loop.run_in_executor(None, _plan_in_executor, db_path, op, gh)
         return _serialize_diff(diff)
 
     # ---------- POST /api/ops/{name}/apply ----------
 
     @app.post("/api/ops/{name}/apply")
-    async def api_apply(name: str, request: Request) -> dict[str, Any]:
+    async def api_apply(
+        name: str,
+        body: dict[str, Any] = Body(default={}),  # noqa: B008
+    ) -> dict[str, Any]:
         """Kick off a background apply. Returns op_id; client subscribes to SSE."""
         state: _AppState = app.state.tacon
         db_path = _db_path_or_503(state)
         # Construct op now so validation errors surface synchronously,
         # not as a silent background-task crash.
-        op = _validate_and_build_op(name, await request.json())
+        op = _validate_and_build_op(name, body)
         gh = _build_gh_or_503(state)
 
         existing = _try_claim_lock(state, op_name=name, phase="apply")
@@ -465,6 +450,71 @@ def create_app(
         return EventSourceResponse(stream())
 
     return app
+
+
+# ---------- middleware: host-header allowlist ----------
+
+
+def _build_host_header_middleware() -> Any:
+    """Pure-ASGI middleware factory for the Host-header allowlist.
+
+    Lives at module level (not inside ``create_app``) so the class
+    construction happens once. The returned class is itself the
+    middleware — ``app.add_middleware(cls)`` instantiates it with the
+    wrapped app + middleware kwargs.
+
+    Why pure ASGI rather than ``@app.middleware("http")``? The
+    decorator routes through Starlette's BaseHTTPMiddleware, which
+    buffers the response body. SSE streaming requires unbuffered
+    chunk delivery; the decorator version silently breaks it.
+    """
+
+    class HostHeaderMiddleware:
+        def __init__(self, app: Any) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            if scope.get("type") != "http":
+                await self.app(scope, receive, send)
+                return
+            raw_host = ""
+            for name, value in scope.get("headers", []):
+                if name == b"host":
+                    raw_host = value.decode("latin-1")
+                    break
+            if raw_host.startswith("["):
+                # IPv6 with optional ":port" trailing the closing bracket.
+                host_only = raw_host.split("]", 1)[0] + "]"
+            elif ":" in raw_host:
+                host_only = raw_host.split(":", 1)[0]
+            else:
+                host_only = raw_host
+            if host_only not in _ALLOWED_HOSTS:
+                body = json.dumps(
+                    {
+                        "error": "forbidden_host",
+                        "detail": (
+                            f"Host header {raw_host!r} not on the allowlist. "
+                            "tacon serve only accepts requests addressed to "
+                            "localhost / 127.0.0.1 / [::1]."
+                        ),
+                    }
+                ).encode("utf-8")
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 403,
+                        "headers": [
+                            (b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode("ascii")),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": body})
+                return
+            await self.app(scope, receive, send)
+
+    return HostHeaderMiddleware
 
 
 # ---------- support: validation + serialization ----------
@@ -706,6 +756,19 @@ def _build_gh_or_503(state: _AppState) -> RateLimitedClient:
 
 
 # ---------- support: executors ----------
+
+
+def _plan_in_executor(db_path: Path, op: Any, gh: RateLimitedClient) -> Any:
+    """Open a thread-local DB connection and run plan().
+
+    Required because sqlite3 connections can only be used from the
+    thread that opened them, and FastAPI's run_in_executor dispatches
+    to a pool of worker threads distinct from the event loop thread.
+    """
+    from tacon.db import open_db
+
+    db = open_db(db_path)
+    return op.plan(db, gh)
 
 
 def _apply_in_executor(
