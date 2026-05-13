@@ -19,10 +19,8 @@ from typing import TYPE_CHECKING
 
 from github import GithubException, UnknownObjectException
 
-from tacon import __version__
 from tacon.db import (
     get_events_by_op,
-    insert_event,
     list_active_repos,
     now_iso,
     update_event_status,
@@ -33,18 +31,16 @@ from tacon.ops import (
     ConfirmCallback,
     Diff,
     Op,
-    RepoApplyResult,
     RepoDiff,
     RepoRollbackResult,
     RollbackResult,
     register,
 )
+from tacon.ops._apply_runner import WriteOutcome, run_per_repo_apply
 from tacon.ops._via_pr import (
-    BranchConflictError,
     close_pr_and_delete_branch,
     ensure_branch,
     open_or_find_pr,
-    via_pr_branch_name,
 )
 
 if TYPE_CHECKING:
@@ -161,112 +157,23 @@ class DeleteFile(Op):
         diff: Diff,
         confirm: ConfirmCallback,
     ) -> ApplyResult:
-        op_id = _new_op_id()
-        op_args_json = json.dumps(self.args, sort_keys=True)
-        result = ApplyResult(op_id=op_id, per_repo=[])
-        branch_name = via_pr_branch_name(OP_CLASS, op_id) if self.via_pr else None
+        return run_per_repo_apply(
+            op_class_name=OP_CLASS,
+            op_args=self.args,
+            via_pr=self.via_pr,
+            db=db,
+            gh=gh,
+            diff=diff,
+            confirm=confirm,
+            direct_write=self._direct_write,
+            via_pr_write=self._apply_via_pr,
+        )
 
-        for repo_diff in diff.per_repo:
-            event_id = insert_event(
-                db,
-                op_id=op_id,
-                op_class=OP_CLASS,
-                op_args_json=op_args_json,
-                tacon_version=__version__,
-                repo_id=repo_diff.repo_id,
-                student_id=repo_diff.student_id,
-                status="planned",
-            )
-
-            if repo_diff.blocked:
-                update_event_status(
-                    db,
-                    event_id,
-                    status="skipped",
-                    error_message=repo_diff.blocked_reason,
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="skipped",
-                        error_message=repo_diff.blocked_reason,
-                    )
-                )
-                continue
-
-            if not confirm(repo_diff):
-                update_event_status(
-                    db, event_id, status="skipped", error_message="declined by confirm callback"
-                )
-                result.per_repo.append(RepoApplyResult(repo_id=repo_diff.repo_id, status="skipped"))
-                continue
-
-            try:
-                if self.via_pr:
-                    assert branch_name is not None
-                    commit_sha, blob_sha, pr_number = self._apply_via_pr(
-                        gh, repo_diff, branch_name, op_id
-                    )
-                else:
-                    commit_sha, blob_sha = self._delete(gh, repo_diff.repo_id)
-                    pr_number = None
-            except BranchConflictError as exc:
-                update_event_status(
-                    db,
-                    event_id,
-                    status="skipped",
-                    error_class="conflict",
-                    error_message=str(exc),
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="skipped",
-                        error_class="conflict",
-                        error_message=str(exc),
-                    )
-                )
-                continue
-            except GithubException as exc:
-                err_class = classify_error(exc)
-                update_event_status(
-                    db,
-                    event_id,
-                    status="failed",
-                    error_class=err_class,
-                    error_message=str(exc),
-                    applied_at=now_iso(),
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="failed",
-                        error_class=err_class,
-                        error_message=str(exc),
-                    )
-                )
-                continue
-
-            update_event_status(
-                db,
-                event_id,
-                status="applied",
-                commit_sha=commit_sha,
-                applied_blob_sha=blob_sha,
-                applied_at=now_iso(),
-                pr_number=pr_number,
-                pr_branch=branch_name if pr_number is not None else None,
-            )
-            result.per_repo.append(
-                RepoApplyResult(
-                    repo_id=repo_diff.repo_id,
-                    status="applied",
-                    commit_sha=commit_sha,
-                    applied_blob_sha=blob_sha,
-                )
-            )
-
-        return result
+    def _direct_write(
+        self, gh: RateLimitedClient, repo_diff: RepoDiff
+    ) -> WriteOutcome:
+        commit_sha, blob_sha = self._delete(gh, repo_diff.repo_id)
+        return WriteOutcome(commit_sha=commit_sha, blob_sha=blob_sha)
 
     def _delete(
         self, gh: RateLimitedClient, repo_id: str, *, branch: str | None = None
@@ -299,8 +206,8 @@ class DeleteFile(Op):
         repo_diff: RepoDiff,
         branch_name: str,
         op_id: str,
-    ) -> tuple[str, str, int]:
-        """Create branch + delete file on it + open PR. Returns (commit, blob, pr_number)."""
+    ) -> WriteOutcome:
+        """Create branch + delete file on it + open PR."""
         repo = gh.get_repo(repo_diff.repo_id)
         default_branch = repo.default_branch
         head = gh.call(repo.get_branch, default_branch)
@@ -316,7 +223,12 @@ class DeleteFile(Op):
             title=f"tacon: {self.message}",
             body=_build_pr_body(self, repo_diff, op_id),
         )
-        return commit_sha, blob_sha, pr_number
+        return WriteOutcome(
+            commit_sha=commit_sha,
+            blob_sha=blob_sha,
+            pr_number=pr_number,
+            pr_branch=branch_name,
+        )
 
     # ---------- rollback ----------
 
@@ -480,12 +392,6 @@ def _build_pr_body(op: DeleteFile, repo_diff: RepoDiff, op_id: str) -> str:
         f"`tacon rollback {op_id}` locally._"
     )
     return summary + diff_block + footer
-
-
-def _new_op_id() -> str:
-    import uuid
-
-    return str(uuid.uuid4())
 
 
 # Register on import so cli.rollback / cli.run can find the class by name
