@@ -103,6 +103,11 @@ v0.2 (in progress):
 - ✅ `tacon run --via-pr` (described below) for branch-protected classrooms.
 - ✅ AddBranchProtection write mode (described below) with snapshot+restore rollback.
 - ✅ `tacon dashboard --publish` (push to a project gh-pages branch).
+- ✅ Multi-classroom config (described below): `--classroom <id>` +
+  `~/.tacon/classes.toml` so one user can juggle several classrooms.
+- ✅ Schema v4 (`events.previous_blob_sha`): FixCIWorkflow rollback fetches
+  the prior blob directly instead of walking to the apply commit's parent
+  (saves 1-2 API calls per rolled-back repo).
 
 ## `--via-pr` mode (branch-protected classrooms)
 
@@ -210,9 +215,56 @@ The token used (`TACON_GITHUB_TOKEN` / `GITHUB_TOKEN` / `gh auth token`)
 must have push access to the target repo. Pages typically goes live one
 to two minutes after the first publish.
 
+## Multi-classroom support
+
+If you TA across several classrooms (different terms, different
+courses), give each one its own DB and switch between them with
+`--classroom <id>`:
+
+```bash
+# Register a classroom (creates ~/.tacon/classes.toml on first use).
+tacon classroom add cs101-spring \
+    --db ~/.tacon/cs101-spring.db \
+    --description "CS101 Spring 2026"
+
+tacon classroom add cs101-fall --db ~/.tacon/cs101-fall.db
+
+# Switch between them per-command.
+tacon sync gh-classroom-id --classroom cs101-spring
+tacon run add-file --path STARTER.md --content-from ./fix.md \
+    --classroom cs101-spring --apply --yes
+
+# Or set a default to skip the flag.
+tacon classroom set-default cs101-spring
+
+# See what you have registered.
+tacon classroom list
+```
+
+DB-path precedence (most specific wins):
+
+1. `--db <path>` — explicit, beats everything
+2. `--classroom <id>` — looked up in `classes.toml`
+3. default classroom from `classes.toml` (if it exists)
+4. legacy `~/.tacon/tacon.db` (via `TACON_HOME`)
+
+`classes.toml` is opt-in: if it doesn't exist, every command keeps
+using the legacy single-DB default. The file format is plain TOML —
+edit by hand if you'd rather:
+
+```toml
+default = "cs101-spring"
+
+[classrooms.cs101-spring]
+db_path = "~/.tacon/cs101-spring.db"
+description = "CS101 Spring 2026"
+
+[classrooms.cs101-fall]
+db_path = "~/.tacon/cs101-fall.db"
+```
+
 ## Limitations
 
-- One classroom per DB. Multi-class config is on the roadmap.
 - Live e2e tests cover all five ops (direct + via-pr where relevant).
   Set `TACON_LIVE=1` in `.env` after configuring `TACON_TEST_ORG` +
   `TACON_TEST_ASSIGNMENT_PREFIX` (see `.env.example`) to run them. The

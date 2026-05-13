@@ -1,13 +1,12 @@
-# Next session — pick up tacon after v0.2.0
+# Next session — pick up tacon after v0.2.x
 
 You (the next agent) are continuing work on **tacon**, a TA workbench for
-GitHub Classroom. **v0.2.0 has fully shipped**: all six MEDIUM/HIGH items
-from the v0.2 roadmap (resume, --via-pr, AddBranchProtection write mode,
-PyPI prep, more live e2e, dashboard --publish), plus the `__version__`
-bump. The **§4.9 apply-method DRY refactor** also shipped this session
-— see -1 below. What's left for v0.2.x is the LOW/speculative duo in
-§4.6 / §4.8, neither of which the handoff recommends picking up
-unsolicited.
+GitHub Classroom. **v0.2.0 fully shipped**, plus three follow-ups
+landed since: **§4.9 (apply-method DRY refactor)**, **§4.8 (schema v4
++ FixCIWorkflow rollback fast-path)**, and **§4.6 (multi-classroom
+config)**. Every numbered roadmap item from §4 has been ticked off. See
+-1 below for the commit-by-commit story. The natural next moves are
+docs polish, twine upload, or starting a v0.3 scope conversation.
 
 This file is your handoff. **Read it top-to-bottom before doing anything
 else.** §-1 (what shipped this session) and §4 (what's left) are the
@@ -17,7 +16,7 @@ two parts you can't skip.
 
 ## -1 · What shipped after v0.1.0
 
-**Thirty commits since the v0.1.0 handoff** (`7c181e5`):
+**Thirty-five+ commits since the v0.1.0 handoff** (`7c181e5`):
 
 | Commit | Item | What |
 |---|---|---|
@@ -51,13 +50,15 @@ two parts you can't skip.
 | `aa66ef7` | §4.9 | **Extract `_apply_runner`** — new module `tacon/ops/_apply_runner.py` with `WriteOutcome` dataclass + `run_per_repo_apply` helper. Factors the shared per-repo apply loop (insert planned event → blocked → confirm → try direct-or-via-pr → catch BranchConflictError → catch GithubException → update event + record result) out of the four content-write ops. Each op now supplies a `_direct_write` + `_apply_via_pr` returning `WriteOutcome` (or None to signal race-skip). AddFile refactored in this commit. AddBranchProtection deliberately stays self-contained (survey/write modes + `prior_state_json` snapshot + no via-pr don't fit the WriteOutcome shape). |
 | `816bf00` | §4.9 | **DeleteFile uses `_apply_runner`** — same shape as the AddFile switch. |
 | `472083e` | §4.9 | **FixCIWorkflow uses `_apply_runner`** — the transform-no-longer-applies race rides on the helper's `WriteOutcome | None` contract; race message stays "transform no longer applies (state changed since plan)" via the `race_skipped_message` kwarg. With this commit, all four content-write ops (AddFile, DeleteFile, AddCIWorkflow, FixCIWorkflow — the last inherits AddFile.apply unchanged) share the loop. |
+| `9e2d9a4` | §4.8 | **Schema v4 + FixCIWorkflow rollback fast-path** — adds `events.previous_blob_sha` (idempotent `_migrate_to_v4` mirroring v2/v3). FixCIWorkflow apply records the pre-patch blob sha; rollback prefers it and fetches via `repo.get_git_blob` (1 call) instead of `get_commit` + `get_contents(ref=parent)` (2 calls + 404 risk). Falls back to the parent walk for pre-v4 events. `WriteOutcome.previous_blob_sha` is the new field; AddFile/DeleteFile leave it None. 6 new tests. |
+| `7574710` | §4.6 | **Multi-classroom config** — new `tacon/classes.py` (load/save/resolve `~/.tacon/classes.toml`). CLI gains a global `--classroom <id>` option threaded through every existing command + a `tacon classroom list/add/set-default` subcommand group. DB-path precedence: `--db` > `--classroom` > default-in-classes.toml > legacy `~/.tacon/tacon.db`. Opt-in: missing classes.toml = exact legacy behavior. Adds conditional `tomli` dep for Python 3.10; TOML writer is hand-rolled. |
+| `a878743` | §4.6 | **Tests for classes.py + CLI classroom integration** — 21 unit tests (parse paths, error paths, add/set-default semantics, resolve_db_path precedence) + 10 CLI integration tests (subcommand surface, --classroom flag wiring, --db beats --classroom, default auto-resolution). A `tacon_home` fixture isolates `TACON_HOME` per test so classes.toml writes never escape `tmp_path`. |
 
-**Seven v0.2 items now shipped**: §4.1 (resume), §4.2 (`--via-pr`), §4.3
+**All nine v0.2 items shipped**: §4.1 (resume), §4.2 (`--via-pr`), §4.3
 (AddBranchProtection write mode), §4.4 (dashboard `--publish`),
-§4.5 (PyPI prep + version bump), §4.7 (live e2e for the remaining ops),
-**§4.9 (apply-method DRY refactor)**. What's left is the LOW/speculative
-duo in §4 below (§4.6 multi-classroom, §4.8 FixCIWorkflow rollback
-latency).
+§4.5 (PyPI prep + version bump), §4.6 (multi-classroom config),
+§4.7 (live e2e for the remaining ops), §4.8 (schema v4 + FixCIWorkflow
+fast-path), §4.9 (apply-method DRY refactor). Nothing on §4 is open.
 
 ---
 
@@ -72,15 +73,15 @@ git log --oneline | head -5          # confirm the §4.5 version-bump commit is 
 ```
 
 Expected:
-- The tip of `main` should be the §4.9 FixCIWorkflow refactor commit
-  (`472083e`), with the two prior §4.9 commits and the v0.2 / handoff
-  commits below it. Eight commits may still be unpushed if the user
-  hasn't run `git push origin main` yet — see §7 for the list.
-- 318 unit tests pass (unchanged by the §4.9 refactor — pure
-  behavior-preserving extract). **18 live unit tests + 1 live
-  skip-on-403** pass if `TACON_LIVE=1`. Live tests hit the real GitHub API.
-- Coverage stays above 90% (gate). ruff + mypy clean across **21
-  source files** (+1 `tacon/ops/_apply_runner.py` since the last handoff).
+- The tip of `main` is the latest handoff-doc commit (this one). The
+  four §4.6 + §4.8 commits (`9e2d9a4`, `7574710`, `a878743`, plus this)
+  sit above the §4.9 trio. All commits at and below the handoff doc
+  are already pushed to `origin/main`.
+- **355 unit tests pass** (+31 since the last handoff: §4.8 added 6,
+  §4.6 added 25). **18 live unit tests + 1 live skip-on-403** pass if
+  `TACON_LIVE=1`. Live tests hit the real GitHub API.
+- Coverage stays above 90% (gate). ruff + mypy clean across **22 source
+  files** (+1 `tacon/classes.py` since the §4.9 handoff).
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -115,15 +116,25 @@ tacon/
 ├── __init__.py                       __version__ = "0.2.0"
 ├── cli.py                            Typer app: sync, run (+ --via-pr),
 │                                     rollback, resume (+ --content-from),
-│                                     ui, dashboard, version
+│                                     ui, dashboard, classroom (NEW),
+│                                     version. Every command takes
+│                                     --classroom <id> alongside --db.
+├── classes.py                        Multi-classroom config (NEW §4.6).
+│                                     Read/write ~/.tacon/classes.toml,
+│                                     resolve_db_path() with precedence
+│                                     --db > --classroom > default > legacy.
 ├── classroom.py                      gh classroom + CSV roster discovery
+│                                     (note: different from classes.py —
+│                                     this one is for student-repo discovery)
 ├── db.py                             SQLite: assignments, students, repos,
 │                                     events, interactions, meta
-│                                     SCHEMA_VERSION = 3
+│                                     SCHEMA_VERSION = 4
 │                                     v2 added events.pr_number/pr_branch
 │                                     v3 added events.prior_state_json
 │                                     (snapshot for AddBranchProtection rollback)
-│                                     Idempotent _migrate_to_v2 + _migrate_to_v3
+│                                     v4 added events.previous_blob_sha
+│                                     (FixCIWorkflow rollback fast-path)
+│                                     Idempotent _migrate_to_v2/3/4
 ├── github_client.py                  RateLimitedClient (Auth.Token) + 8-class
 │                                     classify_error() + retry-after parsing
 ├── ops/
@@ -143,6 +154,8 @@ tacon/
 │   │                                 content-write op supplies a direct_write
 │   │                                 + via_pr_write callable returning
 │   │                                 WriteOutcome (or None for race-skip).
+│   │                                 WriteOutcome.previous_blob_sha (NEW §4.8)
+│   │                                 is threaded through to events.
 │   │                                 The `_` prefix excludes from
 │   │                                 auto-discovery.
 │   ├── add_file.py                   AddFile (supports_via_pr=True). apply()
@@ -163,6 +176,9 @@ tacon/
 │   │                                 (None = race: transform no longer
 │   │                                 applies). Race message is configured via
 │   │                                 the helper's race_skipped_message kwarg.
+│   │                                 _patch now also returns the pre-patch
+│   │                                 blob sha → events.previous_blob_sha
+│   │                                 → rollback fast path (§4.8).
 │   ├── add_branch_protection.py      Survey + write modes
 │   │                                 (supports_rollback=True at class level,
 │   │                                  rollback() filters status='applied' so
@@ -237,6 +253,9 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 
 ### CLI surface (current)
 
+Every non-classroom command also accepts `--classroom <id>` as a peer of
+`--db` (omitted below for brevity).
+
 ```
 tacon sync <classroom-id>
 tacon sync --from-csv repos.csv
@@ -261,14 +280,19 @@ tacon ui                        # Textual TUI
 tacon dashboard --out ./site    # static HTML
 tacon dashboard --publish OWNER/REPO [--publish-branch B] [--publish-message M]
                                 # render + push to gh-pages on a dedicated repo
+tacon classroom list            # multi-classroom: NEW §4.6
+tacon classroom add <id> --db PATH [--description "..."] [--default]
+tacon classroom set-default <id>
 tacon version
 ```
 
 ### Tooling
 
 - `pyproject.toml` — name `tacon`, version `0.2.0` (bumped at the end
-  of v0.2 work, ready for `twine upload`). Deps unchanged. Coverage gate
-  `--cov-fail-under=90`. `asyncio_mode = "auto"`.
+  of v0.2 work, ready for `twine upload`). Adds a conditional
+  `tomli >= 2.0; python_version < '3.11'` for §4.6's TOML reader on
+  Python 3.10. Coverage gate `--cov-fail-under=90`.
+  `asyncio_mode = "auto"`.
 - `.github/workflows/ci.yml` — matrix on Python 3.10/3.11/3.12.
 - `.venv/` — Python 3.13.5 (dev extras: `pip install -e ".[dev]"`).
 - `.env` (gitignored) — live test config + GitHub token.
@@ -367,10 +391,11 @@ doc's `tacon-bot/<full-uuid>` sketch (rationale in `plans/via_pr.md`).
 **Schema columns:** `events.pr_number INTEGER` and `events.pr_branch TEXT`,
 both nullable. Direct-write events store NULL. Migration is
 **fully idempotent** — fresh DBs are built straight at the current
-SCHEMA_VERSION (3); v1/v2 DBs add the columns on next `open_db` via
-`_migrate_to_v2` + `_migrate_to_v3` respectively. v3 also added
-`events.prior_state_json TEXT` for AddBranchProtection write-mode
-rollback (see §4.3).
+SCHEMA_VERSION (4); v1/v2/v3 DBs add the columns on next `open_db` via
+`_migrate_to_v2` + `_migrate_to_v3` + `_migrate_to_v4` respectively.
+v3 also added `events.prior_state_json TEXT` for AddBranchProtection
+write-mode rollback (see §4.3). v4 added `events.previous_blob_sha TEXT`
+for FixCIWorkflow rollback fast-path (see §4.8).
 
 ---
 
@@ -444,11 +469,25 @@ Version bumped to 0.2.0. `python -m build` produces clean
 modules and templates included. **The user runs `twine upload` themselves**
 when ready to publish to PyPI.
 
-### 4.6 — Multi-classroom config (LOW)
+### 4.6 — Multi-classroom config (LOW) ✅ DONE in 2 commits
 
-One DB per classroom is fine for now. A `--classroom <id>` flag + a
-`~/.tacon/classes.toml` index can be added in a v0.2.x point release if
-any user actually has more than one.
+Shipped: `tacon/classes.py` (load/save/resolve `~/.tacon/classes.toml`).
+Global `--classroom <id>` flag on every command. New
+`tacon classroom list/add/set-default` subcommands. Backwards compatible:
+absent `classes.toml` = exact legacy behavior. DB-path precedence is
+documented in `tacon/classes.py::resolve_db_path` and the README.
+
+Commits: `7574710` (implementation), `a878743` (31 tests). Adds a
+conditional `tomli` dep for Python 3.10 (tomllib is stdlib only on
+3.11+); writer is hand-rolled since the file is tiny.
+
+Future extensions:
+- **`tacon classroom remove <id>`** — currently the user edits
+  `classes.toml` by hand to drop an entry. Easy to add when a user
+  actually wants the CLI helper.
+- **Per-classroom defaults beyond `db_path`** — e.g. `default_branch`
+  or a roster CSV path could move into the TOML if classrooms diverge
+  on those settings.
 
 ### 4.7 — Live e2e: more ops (LOW) ✅ DONE in 5 commits
 
@@ -458,17 +497,28 @@ unique tacon-marked paths/branches/workflow-names so reruns don't
 collide. The 7 read-only tests in `test_live_read.py` from v0.1.0 plus
 the 11 write+rollback tests from v0.2 give 18 live tests in total.
 
-### 4.8 — Schema column for FixCIWorkflow rollback latency (LOW)
+### 4.8 — Schema column for FixCIWorkflow rollback latency (LOW) ✅ DONE in 1 commit
 
-Distinct from the schema bumps already shipped (v2 added pr_number /
-pr_branch, v3 added prior_state_json). The change in this item would
-add a `previous_blob_sha` column on events so FixCIWorkflow rollback
-can fetch the prior blob directly instead of walking to the apply
-commit's parent (saves 1-2 API calls per rollback). Only worth it if
-rollback latency turns out to be a real issue. **It would now be a v4
-migration** — bump `SCHEMA_VERSION` to 4 in `db.py` and add a
-`_migrate_to_v4` after the existing two; mirror their idempotent
-cols-set guard shape.
+Shipped: schema v4 added `events.previous_blob_sha` (idempotent
+`_migrate_to_v4` mirroring v2/v3). FixCIWorkflow apply records the
+pre-patch blob sha; rollback fetches it via `repo.get_git_blob` (1
+API call) instead of walking to the apply commit's parent (2 API
+calls plus a 404 risk if the file didn't exist before). Pre-v4 events
+(where `previous_blob_sha` is NULL because the column didn't exist at
+write time) keep the old parent-walk path for backwards compat.
+`WriteOutcome.previous_blob_sha` is the field the apply runner threads
+through; AddFile/DeleteFile leave it None.
+
+Commit: `9e2d9a4`. 6 new tests (5 DB schema + 1 fallback regression).
+
+Future extensions:
+- **Other ops that could benefit** — none of the v0.2 ops do
+  similar parent-walks. If a future op needs a prior-blob snapshot,
+  it can fill `WriteOutcome.previous_blob_sha` the same way.
+- **Backfill for pre-v4 events** — not implemented; the slow-path
+  fallback handles them just fine. Backfilling would require walking
+  every apply commit's parent in a one-time migration job, not worth
+  the complexity for an audit-trail optimization.
 
 ### 4.9 — Apply-method DRY (LOW) ✅ DONE in 3 commits
 
@@ -585,14 +635,11 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 - **Git root:** `/home/tzun/repos/gstack-test/` (the `tacon/` subdir is
   the Python package + tests + pyproject + plans).
 - **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the
-  only branch; the most recent push from prior sessions was `16d168b`.
-  Eight commits sit on top locally (the §4.4/§4.5 set:
-  `e931079`, `5a7b289`, `a19063f`, `7a9c743`; the v0.2-complete handoff
-  set: `2705b67`, `a575e76`, `ec96a2f`; and the §4.9 refactor set:
-  `aa66ef7`, `816bf00`, `472083e` — plus this updated handoff). The
-  Claude Code permission default blocks pushes to a default branch
-  even on user request; the user expects to push manually with
-  `git push origin main` from a regular shell.
+  only branch. The §4.9 refactor trio (`aa66ef7`, `816bf00`, `472083e`)
+  and the §4.9 handoff (`a39230a`) are pushed. The §4.8 + §4.6 commits
+  (`9e2d9a4`, `7574710`, `a878743`) and this updated handoff still
+  need a `git push origin main` from the user (Claude Code's permission
+  default blocks pushes to `main` even on user request).
 - **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` (Python 3.13.5).
   Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
   directly. If pytest collection fails on `textual`, re-install dev
@@ -616,23 +663,25 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 
 1. Run `pytest -q --no-cov --ignore=tests/live`, `ruff check .`,
    `mypy tacon` to confirm nothing broke since the handoff. Expect
-   **318 unit tests passing** (+18 live tests + 1 skip-on-403 if
-   `TACON_LIVE=1`), ruff clean, mypy clean across **21 source files**.
-2. **v0.2 is done.** All six MEDIUM/HIGH items shipped (§4.1, §4.2, §4.3,
-   §4.4, §4.5, §4.7) plus the §4.9 apply-method DRY refactor. What's
-   left is §4.6 / §4.8 — the speculative LOW duo that the handoff
-   explicitly says not to pick up unless the user asks. Default move:
-   **ask the user what they want next** (PyPI upload? v0.3 brainstorm?
-   a specific bug or feature request? one of the LOW items?).
+   **355 unit tests passing** (+18 live tests + 1 skip-on-403 if
+   `TACON_LIVE=1`), ruff clean, mypy clean across **22 source files**.
+2. **All of §4 is done.** Nine v0.2 items shipped: §4.1–§4.9 with the
+   exception of nothing. The roadmap is empty. Default move: **ask the
+   user what they want next** (PyPI upload? v0.3 brainstorm? a specific
+   bug or feature request?).
 3. **Possible immediate-next moves** if the user wants action:
    - **`twine upload dist/tacon-0.2.0*`** — user-side step; you can
      suggest but not run it. Confirm artifacts: `dist/tacon-0.2.0.tar.gz`
      + `dist/tacon-0.2.0-py3-none-any.whl` already built in `dist/`.
-   - **Push the unpushed commits** — eight on top of `16d168b` plus
-     this updated handoff commit (the §4.4/§4.5 set, the v0.2-complete
-     handoff set, and the §4.9 refactor set). Direct push to `main` is
-     blocked by Claude Code's default permissions — the user needs to
-     run `git push origin main` themselves.
+     Note: §4.6 + §4.8 + §4.9 shipped *after* the 0.2.0 build, so the
+     user may want to bump to 0.2.1 and rebuild before uploading.
+   - **Push the unpushed commits** — three sit above `origin/main` plus
+     this handoff commit (§4.8 `9e2d9a4`, §4.6 `7574710`, §4.6 tests
+     `a878743`). Direct push to `main` is blocked by Claude Code's
+     default permissions — the user runs `git push origin main`.
+   - **Bump to 0.2.1** — §4.6 + §4.8 + §4.9 are real user-visible
+     changes (schema bump, new CLI surface) that justify a point
+     release. One-line edits in `tacon/__init__.py` + `pyproject.toml`.
    - **Live e2e for `--publish`** (a §4.4 future extension) — would need
      a sacrificial dashboard-target repo + `TACON_TEST_PAGES_REPO` env
      var. Ask the user first; do NOT aim it at their `<username>.github.io`
