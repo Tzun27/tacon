@@ -2,12 +2,12 @@
 
 You (the next agent) are continuing work on **tacon**, a TA workbench for
 GitHub Classroom. **v0.2.0 fully shipped** + the three v0.2.x follow-ups
-(§4.6 / §4.8 / §4.9). **v0.3 just started**: a local web GUI
+(§4.6 / §4.8 / §4.9). **v0.3 in progress**: a local web GUI
 (`tacon serve`) for TAs who don't want to use the CLI. The design doc
 lives at `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md`
 (produced via `/office-hours`, survived 2 rounds of adversarial review
-at 8/10). **Steps 0 + 1 of the build order have shipped** — see -1
-below. **Steps 2-11 remain.** See §9 for the v0.3 roadmap.
+at 8/10). **Steps 0 + 1 + 2 of the build order have shipped** — see -1
+below. **Steps 3-11 remain.** See §9 for the v0.3 roadmap.
 
 This file is your handoff. **Read it top-to-bottom before doing anything
 else.** §-1 (what shipped this session) and §4 (what's left) are the
@@ -56,9 +56,13 @@ two parts you can't skip.
 | `a878743` | §4.6 | **Tests for classes.py + CLI classroom integration** — 21 unit tests (parse paths, error paths, add/set-default semantics, resolve_db_path precedence) + 10 CLI integration tests (subcommand surface, --classroom flag wiring, --db beats --classroom, default auto-resolution). A `tacon_home` fixture isolates `TACON_HOME` per test so classes.toml writes never escape `tmp_path`. |
 | `ec6d384` | v0.3 Step 0 | **`Op.arg_schema()` classmethod** — Pydantic model per Op describing `__init__` kwargs. Powers the v0.3 GUI's auto-generated forms via `.model_json_schema()` → React. AddFile/DeleteFile/AddCIWorkflow/FixCIWorkflow/AddBranchProtection all implement. FixCIWorkflow's runtime Callable transform is replaced in the schema by a `bump_action_from` + `bump_action_to` pair (same shape the CLI uses). AddBranchProtection embeds the rule shape as a nested optional model (None = survey). Adds `pydantic >= 2.0` to base deps. 10 new tests. |
 | `b2c2318` | v0.3 Step 1 | **`tacon serve` skeleton** — new `tacon/server.py` with FastAPI app factory, host-header allowlist middleware (DNS-rebinding defense; localhost / 127.0.0.1 / [::1] only), free-port picker that walks 5734-5740, uvicorn launcher, and a `/healthz` route. New CLI: `tacon serve [--port N] [--host H] [--open/--no-open]`. New `tacon[gui]` extra (fastapi, uvicorn, sse-starlette, keyring). Dev extra mirrors it plus httpx for FastAPI testing. 13 new tests. |
+| `0511eb2` | v0.3 Step 2 | **Op.apply accepts optional `op_id`** — refactor so the GUI server can pre-generate the UUID and return `{op_id}` to the client before the background apply task fires events. Each of the 5 ops + the runner now take `op_id: str \| None = None`, default = generate internally. 1 new test pins the passthrough. |
+| `c188a46` | v0.3 Step 2 | **API endpoints + SSE feed** — new module `tacon/server_ops.py` owns the request-body → Op-instance bridge (per-op translation for FixCIWorkflow's transform callable and AddBranchProtection's nested rule). Server gains `GET /api/ops` (list + JSON Schema), `POST /api/ops/{name}/plan` (validates + runs plan(), returns Diff), `POST /api/ops/{name}/apply` (single-flight, returns op_id), `POST /api/ops/{op_id}/rollback`, and `GET /api/events?op_id=X&last_event_id=Y` (SSE with rowid cursor + 5s keep-alive). `_AppState` dataclass holds the in-flight slot; check-and-set is atomic under uvicorn's single event loop. Startup lifespan runs an orphan-sweep that rewrites stale `status='in-progress'` rows to `failed` (`error_class='server_restart'`). PyGithub work goes through `run_in_executor` so the SSE feed stays responsive. |
+| `7b19251` | v0.3 Step 2 | **API + SSE test coverage** — 16 new tests in `test_server_api.py` covering GET /api/ops shape, plan/apply/rollback happy paths + 404/422/503/409, single-flight contention, lock release on completion, apply <500ms (proves background-task offload), SSE 3-repo final-state events, cursor resume w/o duplicates. Two production fixes folded in: host-header middleware moved to pure-ASGI (BaseHTTPMiddleware was buffering SSE bodies), and `api_plan` now opens its DB inside the executor (sqlite3 connections aren't thread-shareable). SSE tests spin up uvicorn in a daemon thread — httpx.ASGITransport buffers the entire body, and TestClient.stream() blocks on unbounded streams, so only a real wire harness works. 12 new tests in `test_server_ops.py` cover the request-body → Op-instance bridge layer in isolation. |
+| `6cb8895` | v0.3 Step 2 | **Drop deprecation warning** — switch from `HTTP_422_UNPROCESSABLE_ENTITY` to `HTTP_422_UNPROCESSABLE_CONTENT` per starlette's RFC 9110 rename. Three call sites updated. |
 
 **All nine v0.2 items shipped** (§4.1-§4.9). **v0.3 in progress**: Steps
-0 + 1 done, Steps 2-11 remaining (see §9 below).
+0 + 1 + 2 done, Steps 3-11 remaining (see §9 below).
 
 ---
 
@@ -68,20 +72,21 @@ two parts you can't skip.
 cd /home/tzun/repos/gstack-test/tacon
 git status --short                   # clean (or just .gitignored .env / .venv / dist / tacon-dashboard)
 git log --oneline | head -5          # confirm the §4.5 version-bump commit is the tip
-.venv/bin/pytest -q --no-cov --ignore=tests/live   # 318 unit tests pass in ~30s
+.venv/bin/pytest -q --no-cov --ignore=tests/live   # 407 unit tests pass in ~30s
 .venv/bin/ruff check . && .venv/bin/mypy tacon     # both clean
 ```
 
 Expected:
-- The tip of `main` is the latest handoff-doc commit (this one). The two
-  v0.3 commits (`ec6d384`, `b2c2318`) sit above the v0.2.x commits.
-  Most of the v0.2.x work is already pushed to `origin/main`; the v0.3
-  commits + this handoff are unpushed at handoff time.
-- **378 unit tests pass** (+23 since the §4.6/§4.8 handoff: Step 0 added
-  10 arg_schema tests; Step 1 added 13 server + CLI serve tests). 18
+- The tip of `main` is the latest handoff-doc commit (this one). The
+  Step 0/1/2 v0.3 commits sit above the v0.2.x commits. Most of the
+  v0.2.x work is already pushed to `origin/main`; the v0.3 commits +
+  this handoff are unpushed at handoff time.
+- **407 unit tests pass** (+29 since the Step 1 handoff: 1 op_id
+  passthrough + 12 server_ops bridge + 16 API/SSE endpoint tests). 18
   live unit tests + 1 live skip-on-403 still pass if `TACON_LIVE=1`.
-- Coverage stays above 90% (gate). ruff + mypy clean across **23 source
-  files** (+1 `tacon/server.py` since the §4.6 handoff).
+- Coverage stays above 90% (gate). ruff + mypy clean across **24 source
+  files** (+1 `tacon/server_ops.py` since the Step 1 handoff;
+  `tacon/server.py` grew but stays in the same source tree).
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -126,6 +131,24 @@ tacon/
 ├── classroom.py                      gh classroom + CSV roster discovery
 │                                     (note: different from classes.py —
 │                                     this one is for student-repo discovery)
+├── server.py                         FastAPI app (`tacon serve`).
+│                                     Step 1 shipped the skeleton; Step 2
+│                                     added GET /api/ops, POST plan/apply,
+│                                     POST rollback, GET /api/events (SSE).
+│                                     _AppState dataclass holds the
+│                                     in-flight slot + GH factory + DB
+│                                     path. Host-allowlist is pure-ASGI
+│                                     middleware so SSE chunks aren't
+│                                     buffered. PyGithub work goes
+│                                     through run_in_executor.
+├── server_ops.py                     Request-body → Op-instance bridge.
+│                                     Per-op translation for
+│                                     FixCIWorkflow's transform callable
+│                                     and AddBranchProtection's nested
+│                                     rule dataclass. Outside server.py
+│                                     so the construction logic stays
+│                                     unit-testable without FastAPI in
+│                                     the import graph.
 ├── db.py                             SQLite: assignments, students, repos,
 │                                     events, interactions, meta
 │                                     SCHEMA_VERSION = 4
@@ -213,7 +236,7 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 **Modules starting with `_` are explicitly skipped** — that's why
 `_via_pr.py` is helpers, not an op.
 
-### Tests (tests/, 318 unit + 18 live + 1 skip-on-403 live)
+### Tests (tests/, 407 unit + 18 live + 1 skip-on-403 live)
 
 - `tests/conftest.py` — `tmp_db`, `seed_repos`, `fake_repo`, `fake_gh`
 - `tests/test_db.py` — 23 tests (5 schema-v2 + 5 schema-v3:
@@ -239,6 +262,18 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 - `tests/ops/test_add_branch_protection.py` — **26 tests** (15 new for write mode + drift + describe)
 - `tests/ops/test_branch_protection_rule.py` — **31 tests (NEW)** (rule validation, YAML, bundled templates)
 - `tests/ops/test_registry_discovery.py` — unchanged
+- `tests/test_server.py` — **11 tests** (Step 1: /healthz + host-header
+  allowlist + port-picker)
+- `tests/test_server_ops.py` — **12 tests** (Step 2: request-body →
+  Op-instance bridge — every op's construction path including
+  FixCIWorkflow transform callable + AddBranchProtection nested rule
+  + WorkflowValidationError-as-422 surfacing)
+- `tests/test_server_api.py` — **16 tests** (Step 2: GET /api/ops shape +
+  flags, POST plan happy/404/422/503, POST apply op_id + <500ms +
+  409 single-flight + lock release, POST rollback dispatch + 404, SSE
+  feed delivers 3 final-state events + cursor resumes from N+1 without
+  duplicates). SSE tests use uvicorn-in-a-thread (ASGITransport
+  buffers SSE bodies, TestClient.stream() hangs on unbounded streams).
 - `tests/live/` — opt-in live e2e (18 unit + 1 skip-on-403):
   - `test_live_read.py` (7 tests, read-only)
   - `test_live_apply_rollback.py` (2 tests, AddFile direct write+rollback)
@@ -682,8 +717,8 @@ before touching code. Key sections:
 |---|---|---|---|
 | 0 | ✅ DONE (`ec6d384`) | Op.arg_schema() on all 5 ops | 2.5h |
 | 1 | ✅ DONE (`b2c2318`) + ✅ live-validated | tacon serve skeleton (FastAPI + CLI) | 4h |
-| 2 | NEXT | API: op listing + plan/apply/rollback + SSE | 10h |
-| 3 | | Vite + React + shadcn scaffold | 3h |
+| 2 | ✅ DONE (`0511eb2`+`c188a46`+`7b19251`+`6cb8895`) | API: op listing + plan/apply/rollback + SSE | 10h |
+| 3 | NEXT | Vite + React + shadcn scaffold | 3h |
 | 4 | | Settings page first | 5h |
 | 5 | | Verb-card home screen | 3h |
 | 5.5 | | Schema-driven form renderer | 6h |
@@ -708,16 +743,65 @@ is bundled at Step 3/Step 10, `/` needs a static-file mount to serve
 `tacon/web/dist/index.html`. That's the correct skeleton behavior — just
 flagging so the next agent doesn't think the SPA is missing.
 
-**Step 2 is the natural next pickup.** Concretely: add `GET /api/ops`,
-`POST /api/ops/{name}/plan`, `POST /api/ops/{name}/apply` (background
-task), `POST /api/ops/{op_id}/rollback`, and `GET /api/events?op_id=X&last_event_id=Y`
-(SSE with cursor). All 5 op classes are already exposable via their
-`arg_schema()`. See design doc Step 2 for the exact SSE protocol + event
-payload schema + acceptance criteria.
+**Step 2 shipped over 4 commits** (`0511eb2`+`c188a46`+`7b19251`+`6cb8895`)
+and covers everything the design doc spelled out:
 
-**The single-flight lock** (`asyncio.Lock()` in `tacon/server.py`) lands
-in Step 2 as well — apply/rollback acquire it; concurrent attempts get
-409. Startup sweep marks orphan `in-progress` rows as `failed`.
+- `GET /api/ops` — list of `{name, op_class, arg_schema (JSON Schema),
+  supports_via_pr, supports_rollback}` for each registered op. Works on
+  a bare `create_app()` (no DB/token needed) so the SPA can render the
+  card list even before settings page is filled in.
+- `POST /api/ops/{name}/plan` — Pydantic-validates the body against
+  `arg_schema()`, constructs the op via the `tacon/server_ops.py`
+  bridge, runs `plan()` in a thread executor, returns the serialized
+  Diff.
+- `POST /api/ops/{name}/apply` — pre-generates op_id, single-flight
+  lock (`state.in_flight is not None`; atomic check-and-set under
+  uvicorn's single event loop), schedules a background task that runs
+  `plan()`-then-`apply()` in the executor, returns `{op_id, phase, op_name}`
+  immediately. 409 with the in-flight op_id on contention.
+- `POST /api/ops/{op_id}/rollback` — looks up `op_class` from the
+  events table, dispatches `cls.rollback(...)` in a background task.
+  404 for unknown op_id; 409 on lock contention.
+- `GET /api/events?op_id=X&last_event_id=Y` — SSE feed via
+  `sse_starlette.EventSourceResponse`. Cursor is the SQLite rowid
+  (integer, monotonic on inserts). 100ms poll interval, 5s idle
+  keep-alive. Payload shape matches the design doc:
+  `{event_id, cursor, op_id, op_class, phase, repo_id, student_id, status, error_class?, error_message?, commit_sha?, pr_number?}`.
+
+**Single-flight semantics**: the lock is `state.in_flight is not None`
+(no asyncio.Lock — the synchronous check-and-set inside one event-loop
+iteration is atomic enough under single-process uvicorn). If we ever
+run multi-worker, we'd need a DB-level lock instead.
+
+**Two production fixes** that the SSE tests forced into Step 2:
+
+1. **Host-header allowlist is now a pure-ASGI middleware** (not
+   `@app.middleware("http")`). The decorator routes through
+   Starlette's BaseHTTPMiddleware which buffers the entire response
+   body — that silently breaks SSE chunk delivery. The pure-ASGI form
+   sidesteps the buffer entirely. Existing host-allowlist tests still
+   pass unchanged.
+2. **`api_plan` passes the DB path into the executor** (not an
+   already-open Database handle). `sqlite3.Connection` objects can
+   only be used from the thread that opened them, and FastAPI's
+   `run_in_executor` dispatches to a worker thread.
+
+**Startup orphan-sweep**: a lifespan hook rewrites `events` rows with
+`status='in-progress'` older than 60s to `status='failed'`,
+`error_class='server_restart'`, `error_message='process exited mid-apply'`.
+The CLI never produces `in-progress` (that's a GUI-layer status for the
+background-task lifecycle in future steps); the sweep lands now so a
+future rollout is safe from crash-orphaned ops.
+
+**One Step-2 caveat for the frontend (Step 6 will care)**: the SSE
+feed only emits ONE event per repo with the *final* status (the runner
+INSERTs once then UPDATEs in place; the rowid cursor doesn't pick up
+updates). The design doc's `planned → in-progress → applied | failed`
+tile transitions can't be driven entirely from SSE. The frontend
+should: render tiles in `planned` state when Apply is clicked, then
+update each tile to the final status as SSE events arrive. If genuine
+in-progress visibility becomes important, the runner could INSERT a
+new row per status change instead of UPDATEing — small refactor.
 
 **Open Question still unanswered:** v0.3.0 version bump strategy.
 Default plan: bump to `0.3.0.dev0` at the start of Step 2 to signal
@@ -737,16 +821,19 @@ literal next coding step.
 
 1. Run `pytest -q --no-cov --ignore=tests/live`, `ruff check .`,
    `mypy tacon` to confirm nothing broke since the handoff. Expect
-   **378 unit tests passing** (+18 live tests + 1 skip-on-403 if
-   `TACON_LIVE=1`), ruff clean, mypy clean across **23 source files**.
+   **407 unit tests passing** (+18 live tests + 1 skip-on-403 if
+   `TACON_LIVE=1`), ruff clean, mypy clean across **24 source files**.
 2. **v0.3 GUI is in progress.** Read the design doc at
    `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md`
-   end-to-end. Steps 0 + 1 shipped. Step 2 is the natural next.
-3. **Steps 2-11 are ~63 hours over 3-4 weekends.** Don't try to do it
-   all in one session. Logical milestones: after Step 2 (API), after
-   Step 5.5 (renderer), after Step 6 (AddFile spine — the keystone),
-   after Step 8 (rollback + Past Ops), v0.3.0 release.
-4. **Push unpushed commits** — `ec6d384` (Step 0) and `b2c2318` (Step 1)
+   end-to-end. Steps 0 + 1 + 2 shipped. **Step 3 is the natural next**:
+   Vite + React + shadcn scaffold (~3h, +1 wheel-bundle plumbing). All
+   the Python-side scaffolding the SPA needs is already on disk.
+3. **Steps 3-11 are ~53 hours over 3 weekends.** Don't try to do it all
+   in one session. Logical milestones: after Step 5.5 (renderer), after
+   Step 6 (AddFile spine — the keystone), after Step 8 (rollback +
+   Past Ops), v0.3.0 release.
+4. **Push unpushed commits** — `ec6d384` + `b2c2318` (Steps 0/1) and
+   the 4 Step 2 commits (`0511eb2`, `c188a46`, `7b19251`, `6cb8895`)
    plus this handoff sit above `origin/main`. Direct push to `main` is
    blocked by Claude Code's permission default — the user runs
    `git push origin main` themselves.
@@ -754,13 +841,33 @@ literal next coding step.
    step has an acceptance criterion. Honor them — the spec review
    surfaced 17 gaps that were patched, and skipping the criteria
    re-opens them.
-6. **Pre-existing TL;DR points still apply:**
-   - **`twine upload dist/tacon-0.2.0*`** — note that §4.6/§4.8/§4.9
-     + v0.3 Steps 0/1 shipped *after* the 0.2.0 build, so user should
+6. **Step 3 setup checklist** (for the next agent — these aren't done):
+   - Confirm `node` (≥20) + `pnpm` (≥9) are available; if not, the user
+     installs them — Claude Code shouldn't touch system-level package
+     managers without asking. `pnpm` may be installable via
+     `npm install -g pnpm` if `npm` exists.
+   - Create `tacon/web/` with `pnpm init`; add Vite + React + TS
+     scaffold (`pnpm create vite@latest .` then strip the demo). Pin
+     versions in `package.json` so CI is deterministic.
+   - shadcn primitives via `npx shadcn@latest add button input textarea
+     switch select card dialog badge progress table`. The generated
+     `components/ui/*.tsx` files are committed.
+   - Add TanStack Query (`pnpm add @tanstack/react-query`).
+   - **Wire the static-file mount in `tacon/server.py`**: serve
+     `tacon/web/dist/*` at `/`, falling back to a one-line setup hint
+     when the dist directory is absent (per the design doc Distribution
+     Plan).
+   - Acceptance criterion (design doc Step 3): `pnpm build` produces
+     `tacon/web/dist/index.html`; `tacon serve` serves it at `/`;
+     component-mount test passes.
+7. **Pre-existing TL;DR points still apply:**
+   - **`twine upload dist/tacon-0.2.0*`** — §4.6/§4.8/§4.9 + v0.3
+     Steps 0/1/2 shipped *after* the 0.2.0 build, so the user should
      bump version + rebuild before uploading.
-   - **Bump to 0.2.1 or 0.3.0.dev0** — depending on whether the user
-     wants a v0.2 point release before v0.3 work continues.
-7. Use `/plan-eng-review` for substantial new modules; `/qa` for live
-   GUI testing once a build is shippable; `/review` before each
-   v0.3 milestone commit.
-8. `/context-save` at the end of your session and update this file.
+   - **Bump to 0.3.0.dev0 OPEN QUESTION** — design doc flagged this as
+     a confirm-with-user item; not bumped yet to keep PyPI metadata
+     clean. Address before Step 11 (release).
+8. Use `/plan-eng-review` for substantial new modules; `/qa` for live
+   GUI testing once a build is shippable; `/review` before each v0.3
+   milestone commit.
+9. `/context-save` at the end of your session and update this file.
