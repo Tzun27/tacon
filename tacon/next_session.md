@@ -4,8 +4,10 @@ You (the next agent) are continuing work on **tacon**, a TA workbench for
 GitHub Classroom. **v0.2.0 has fully shipped**: all six MEDIUM/HIGH items
 from the v0.2 roadmap (resume, --via-pr, AddBranchProtection write mode,
 PyPI prep, more live e2e, dashboard --publish), plus the `__version__`
-bump. What's left for v0.2.x is the LOW/speculative trio in §4.6 / §4.8 /
-§4.9, none of which the handoff recommends picking up unsolicited.
+bump. The **§4.9 apply-method DRY refactor** also shipped this session
+— see -1 below. What's left for v0.2.x is the LOW/speculative duo in
+§4.6 / §4.8, neither of which the handoff recommends picking up
+unsolicited.
 
 This file is your handoff. **Read it top-to-bottom before doing anything
 else.** §-1 (what shipped this session) and §4 (what's left) are the
@@ -15,7 +17,7 @@ two parts you can't skip.
 
 ## -1 · What shipped after v0.1.0
 
-**Twenty-seven commits since the v0.1.0 handoff** (`7c181e5`):
+**Thirty commits since the v0.1.0 handoff** (`7c181e5`):
 
 | Commit | Item | What |
 |---|---|---|
@@ -46,11 +48,16 @@ two parts you can't skip.
 | `5a7b289` | §4.4 | **CLI wiring for `--publish`** — `tacon dashboard --publish OWNER/REPO` (+ `--publish-branch`, `--publish-message`). Renders + publishes in one command. 19 new tests: input-validation, branch-create vs update, 404 fallback variants (UnknownObjectException AND generic GithubException(404)), custom branch, CLI flag forwarding, `PublishError` → exit 2, regression guard that no `RateLimitedClient` is constructed when `--publish` is omitted (render-only stays token-free). Removed the old "not yet wired" CLI test. |
 | `a19063f` | §4.4, docs | **README + CLI help** — new "Dashboard --publish" section spells out user-page-vs-project-page distinction so it's obvious that pointing at a dedicated repo (`myorg/cs101-dashboard`) doesn't touch `<username>.github.io`. CLI help mirrors the warning. |
 | `7a9c743` | §4.5 | **`__version__` 0.1.0 → 0.2.0** in `tacon/__init__.py` and `pyproject.toml`. Verified: fresh `python -m build` produces `tacon-0.2.0-py3-none-any.whl` + sdist; both contain `tacon/dashboard/publish.py` and the bundled protection templates. |
+| `aa66ef7` | §4.9 | **Extract `_apply_runner`** — new module `tacon/ops/_apply_runner.py` with `WriteOutcome` dataclass + `run_per_repo_apply` helper. Factors the shared per-repo apply loop (insert planned event → blocked → confirm → try direct-or-via-pr → catch BranchConflictError → catch GithubException → update event + record result) out of the four content-write ops. Each op now supplies a `_direct_write` + `_apply_via_pr` returning `WriteOutcome` (or None to signal race-skip). AddFile refactored in this commit. AddBranchProtection deliberately stays self-contained (survey/write modes + `prior_state_json` snapshot + no via-pr don't fit the WriteOutcome shape). |
+| `816bf00` | §4.9 | **DeleteFile uses `_apply_runner`** — same shape as the AddFile switch. |
+| `472083e` | §4.9 | **FixCIWorkflow uses `_apply_runner`** — the transform-no-longer-applies race rides on the helper's `WriteOutcome | None` contract; race message stays "transform no longer applies (state changed since plan)" via the `race_skipped_message` kwarg. With this commit, all four content-write ops (AddFile, DeleteFile, AddCIWorkflow, FixCIWorkflow — the last inherits AddFile.apply unchanged) share the loop. |
 
-**Six v0.2 items now shipped**: §4.1 (resume), §4.2 (`--via-pr`), §4.3
+**Seven v0.2 items now shipped**: §4.1 (resume), §4.2 (`--via-pr`), §4.3
 (AddBranchProtection write mode), §4.4 (dashboard `--publish`),
-§4.5 (PyPI prep + version bump), §4.7 (live e2e for the remaining ops).
-What's left is the LOW/speculative trio in §4 below.
+§4.5 (PyPI prep + version bump), §4.7 (live e2e for the remaining ops),
+**§4.9 (apply-method DRY refactor)**. What's left is the LOW/speculative
+duo in §4 below (§4.6 multi-classroom, §4.8 FixCIWorkflow rollback
+latency).
 
 ---
 
@@ -65,15 +72,15 @@ git log --oneline | head -5          # confirm the §4.5 version-bump commit is 
 ```
 
 Expected:
-- The latest handoff-doc commit is the tip of `main` locally; the §4.5
-  version-bump commit (`7a9c743`) sits one below it. Five commits may
-  still be unpushed if the user hasn't run `git push origin main` yet
-  — see §7 for the list.
-- 318 unit tests pass (was 300 mid-v0.2; +19 dashboard publish tests,
-  -1 stale "not yet wired" CLI test). **18 live unit tests + 1 live
+- The tip of `main` should be the §4.9 FixCIWorkflow refactor commit
+  (`472083e`), with the two prior §4.9 commits and the v0.2 / handoff
+  commits below it. Eight commits may still be unpushed if the user
+  hasn't run `git push origin main` yet — see §7 for the list.
+- 318 unit tests pass (unchanged by the §4.9 refactor — pure
+  behavior-preserving extract). **18 live unit tests + 1 live
   skip-on-403** pass if `TACON_LIVE=1`. Live tests hit the real GitHub API.
-- Coverage stays above 90% (gate). ruff + mypy clean across **20
-  source files** (+1 `tacon/dashboard/publish.py` since the last handoff).
+- Coverage stays above 90% (gate). ruff + mypy clean across **21
+  source files** (+1 `tacon/ops/_apply_runner.py` since the last handoff).
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -130,20 +137,32 @@ tacon/
 │   │                                 open_or_find_pr (idempotent on 422),
 │   │                                 close_pr_and_delete_branch (returns
 │   │                                 RollbackOutcome).
-│   ├── add_file.py                   AddFile (supports_via_pr=True). Has
-│   │                                 _ApplyOutcome dataclass, _apply_via_pr,
-│   │                                 _rollback_via_pr; _push_file accepts
-│   │                                 branch= kwarg.
+│   ├── _apply_runner.py              Shared per-repo apply loop (NEW §4.9).
+│   │                                 Exports: WriteOutcome dataclass,
+│   │                                 run_per_repo_apply(...). Each
+│   │                                 content-write op supplies a direct_write
+│   │                                 + via_pr_write callable returning
+│   │                                 WriteOutcome (or None for race-skip).
+│   │                                 The `_` prefix excludes from
+│   │                                 auto-discovery.
+│   ├── add_file.py                   AddFile (supports_via_pr=True). apply()
+│   │                                 delegates to run_per_repo_apply via
+│   │                                 _direct_write + _apply_via_pr (both
+│   │                                 return WriteOutcome); _rollback_via_pr
+│   │                                 unchanged; _push_file accepts branch=.
 │   ├── delete_file.py                DeleteFile (supports_via_pr=True). Same
-│   │                                 shape: _apply_via_pr, _rollback_via_pr;
-│   │                                 _delete accepts branch= kwarg.
+│   │                                 shape as AddFile: helper-based apply,
+│   │                                 _apply_via_pr returns WriteOutcome,
+│   │                                 _rollback_via_pr handles via-pr undo.
 │   ├── add_ci_workflow.py            AddCIWorkflow (subclasses AddFile;
-│   │                                 inherits via-pr wholesale; just
-│   │                                 forwards via_pr through __init__).
+│   │                                 inherits helper-based apply wholesale;
+│   │                                 just forwards via_pr through __init__).
 │   ├── fix_ci_workflow.py            FixCIWorkflow (supports_via_pr=True).
-│   │                                 Own apply path; _patch accepts branch=,
-│   │                                 _apply_via_pr orchestrates,
-│   │                                 _rollback_via_pr handles.
+│   │                                 Helper-based apply; _direct_write +
+│   │                                 _apply_via_pr return WriteOutcome | None
+│   │                                 (None = race: transform no longer
+│   │                                 applies). Race message is configured via
+│   │                                 the helper's race_skipped_message kwarg.
 │   ├── add_branch_protection.py      Survey + write modes
 │   │                                 (supports_rollback=True at class level,
 │   │                                  rollback() filters status='applied' so
@@ -451,17 +470,34 @@ migration** — bump `SCHEMA_VERSION` to 4 in `db.py` and add a
 `_migrate_to_v4` after the existing two; mirror their idempotent
 cols-set guard shape.
 
-### 4.9 — Apply-method DRY (NEW LOW; tech debt from §4.2)
+### 4.9 — Apply-method DRY (LOW) ✅ DONE in 3 commits
 
-The four write ops' `apply()` methods all share the same boilerplate
-shape: insert planned event → blocked check → confirm callback → try
-direct-or-via-pr → catch BranchConflictError → catch GithubException →
-update_event_status. ~100 lines × 4 ops = ~400 lines of similar code.
-Could be DRYed via an `_apply_runner(self, db, gh, diff, confirm,
-write_fn)` helper in `tacon/ops/__init__.py` or `_via_pr.py`. Skipped
-this session because each op stays self-contained and the duplication
-is concentrated in one spot per op. Refactor only if a 5th write op
-gets added or if a bug forces touching all four at once.
+Shipped: `tacon/ops/_apply_runner.py` with `WriteOutcome` dataclass +
+`run_per_repo_apply(*, op_class_name, op_args, via_pr, db, gh, diff,
+confirm, direct_write, via_pr_write=None, race_skipped_message=...)`.
+The helper handles the full per-repo lifecycle (event insert/update,
+blocked, declined, BranchConflictError, GithubException, race-skip).
+Each content-write op now exposes a thin `_direct_write` and
+`_apply_via_pr` returning `WriteOutcome` (or `None` for race-skip);
+apply() is a single call to the helper.
+
+Commits: `aa66ef7` (helper module + AddFile switch), `816bf00`
+(DeleteFile), `472083e` (FixCIWorkflow). AddCIWorkflow inherits
+AddFile.apply unchanged.
+
+AddBranchProtection deliberately stays self-contained: it has a
+survey/write mode split, no via-pr support, no commit/blob fields, and
+a `prior_state_json` snapshot — a poor fit for the WriteOutcome shape.
+If a future op needs the prior_state-snapshot pattern, generalize the
+helper at that point rather than now.
+
+Future extensions:
+- **Race-skip with separate event vs result messages** — the original
+  FixCIWorkflow code had slightly different strings for the event
+  (`"transform no longer applies (state changed since plan)"`) vs the
+  RepoApplyResult (`"state changed since plan"`). The helper unifies
+  them on the longer string. If a future op needs distinct messages,
+  add a `race_result_message` kwarg paralleling `race_skipped_message`.
 
 ---
 
@@ -510,7 +546,9 @@ gets added or if a bug forces touching all four at once.
 
 11. ~~**`__version__` is still 0.1.0.**~~ Bumped to 0.2.0 in `7a9c743`.
 
-12. **Apply-method duplication across 4 ops.** §4.9. Tolerable for now.
+12. ~~**Apply-method duplication across 4 ops.**~~ Resolved by the §4.9
+    refactor (commits `aa66ef7`, `816bf00`, `472083e`). All four
+    content-write ops now share `tacon/ops/_apply_runner.run_per_repo_apply`.
 
 13. **Branch-delete permission soft-failure.** When `tacon rollback`
     closes a via-pr PR but the token can't delete the branch (rare —
@@ -548,12 +586,13 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
   the Python package + tests + pyproject + plans).
 - **Remote:** `https://github.com/Tzun27/tacon.git` — `main` is the
   only branch; the most recent push from prior sessions was `16d168b`.
-  This session adds the §4.7 + §4.3 commits, the four §4.4/§4.5 commits
-  (`e931079`, `5a7b289`, `a19063f`, `7a9c743`), and the handoff doc
-  commit on top — five unpushed at handoff time. The Claude Code
-  permission default blocks pushes to a default branch even on user
-  request; the user expects to push manually with `git push origin main`
-  from a regular shell.
+  Eight commits sit on top locally (the §4.4/§4.5 set:
+  `e931079`, `5a7b289`, `a19063f`, `7a9c743`; the v0.2-complete handoff
+  set: `2705b67`, `a575e76`, `ec96a2f`; and the §4.9 refactor set:
+  `aa66ef7`, `816bf00`, `472083e` — plus this updated handoff). The
+  Claude Code permission default blocks pushes to a default branch
+  even on user request; the user expects to push manually with
+  `git push origin main` from a regular shell.
 - **venv:** `/home/tzun/repos/gstack-test/tacon/.venv/` (Python 3.13.5).
   Activate with `source .venv/bin/activate` or call `.venv/bin/<tool>`
   directly. If pytest collection fails on `textual`, re-install dev
@@ -578,21 +617,22 @@ handling, auth), invoke `/plan-eng-review` first and write the plan to
 1. Run `pytest -q --no-cov --ignore=tests/live`, `ruff check .`,
    `mypy tacon` to confirm nothing broke since the handoff. Expect
    **318 unit tests passing** (+18 live tests + 1 skip-on-403 if
-   `TACON_LIVE=1`), ruff clean, mypy clean across **20 source files**.
+   `TACON_LIVE=1`), ruff clean, mypy clean across **21 source files**.
 2. **v0.2 is done.** All six MEDIUM/HIGH items shipped (§4.1, §4.2, §4.3,
-   §4.4, §4.5, §4.7). What's left is §4.6 / §4.8 / §4.9 — the
-   speculative LOW trio that the handoff explicitly says not to pick up
-   unless the user asks. Default move: **ask the user what they want
-   next** (PyPI upload? v0.3 brainstorm? a specific bug or feature
-   request? one of the LOW items?).
+   §4.4, §4.5, §4.7) plus the §4.9 apply-method DRY refactor. What's
+   left is §4.6 / §4.8 — the speculative LOW duo that the handoff
+   explicitly says not to pick up unless the user asks. Default move:
+   **ask the user what they want next** (PyPI upload? v0.3 brainstorm?
+   a specific bug or feature request? one of the LOW items?).
 3. **Possible immediate-next moves** if the user wants action:
    - **`twine upload dist/tacon-0.2.0*`** — user-side step; you can
      suggest but not run it. Confirm artifacts: `dist/tacon-0.2.0.tar.gz`
      + `dist/tacon-0.2.0-py3-none-any.whl` already built in `dist/`.
-   - **Push the unpushed commits** (`e931079`, `5a7b289`, `a19063f`,
-     `7a9c743`, plus this handoff commit) to the GitHub remote. Note:
-     direct push to `main` is blocked by Claude Code's default
-     permissions — the user needs to run `git push origin main` themselves.
+   - **Push the unpushed commits** — eight on top of `16d168b` plus
+     this updated handoff commit (the §4.4/§4.5 set, the v0.2-complete
+     handoff set, and the §4.9 refactor set). Direct push to `main` is
+     blocked by Claude Code's default permissions — the user needs to
+     run `git push origin main` themselves.
    - **Live e2e for `--publish`** (a §4.4 future extension) — would need
      a sacrificial dashboard-target repo + `TACON_TEST_PAGES_REPO` env
      var. Ask the user first; do NOT aim it at their `<username>.github.io`
