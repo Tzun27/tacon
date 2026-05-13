@@ -21,15 +21,12 @@ helper to call when the via_pr flag is set.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from github import GithubException, UnknownObjectException
 
-from tacon import __version__
 from tacon.db import (
     get_events_by_op,
-    insert_event,
     list_active_repos,
     now_iso,
     update_event_status,
@@ -40,18 +37,16 @@ from tacon.ops import (
     ConfirmCallback,
     Diff,
     Op,
-    RepoApplyResult,
     RepoDiff,
     RepoRollbackResult,
     RollbackResult,
     register,
 )
+from tacon.ops._apply_runner import WriteOutcome, run_per_repo_apply
 from tacon.ops._via_pr import (
-    BranchConflictError,
     close_pr_and_delete_branch,
     ensure_branch,
     open_or_find_pr,
-    via_pr_branch_name,
 )
 
 if TYPE_CHECKING:
@@ -62,17 +57,6 @@ if TYPE_CHECKING:
 
 OP_NAME = "add-file"
 OP_CLASS = "add_file"
-
-
-@dataclass
-class _ApplyOutcome:
-    """Internal: per-repo apply outcome packaging both direct-write + via-pr fields."""
-
-    status: str
-    commit_sha: str
-    blob_sha: str
-    pr_number: int | None
-    pr_branch: str | None
 
 
 class AddFile(Op):
@@ -182,118 +166,23 @@ class AddFile(Op):
         diff: Diff,
         confirm: ConfirmCallback,
     ) -> ApplyResult:
-        op_id = _new_op_id()
-        op_args_json = json.dumps(self.args, sort_keys=True)
-        result = ApplyResult(op_id=op_id, per_repo=[])
-        branch_name = via_pr_branch_name(self.op_class_name, op_id) if self.via_pr else None
+        return run_per_repo_apply(
+            op_class_name=self.op_class_name,
+            op_args=self.args,
+            via_pr=self.via_pr,
+            db=db,
+            gh=gh,
+            diff=diff,
+            confirm=confirm,
+            direct_write=self._direct_write,
+            via_pr_write=self._apply_via_pr,
+        )
 
-        for repo_diff in diff.per_repo:
-            # Pre-record: every per-repo decision lands in events, even skips.
-            event_id = insert_event(
-                db,
-                op_id=op_id,
-                op_class=self.op_class_name,
-                op_args_json=op_args_json,
-                tacon_version=__version__,
-                repo_id=repo_diff.repo_id,
-                student_id=repo_diff.student_id,
-                status="planned",
-            )
-
-            if repo_diff.blocked:
-                update_event_status(
-                    db,
-                    event_id,
-                    status="skipped",
-                    error_class=None,
-                    error_message=repo_diff.blocked_reason,
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="skipped",
-                        error_message=repo_diff.blocked_reason,
-                    )
-                )
-                continue
-
-            if not confirm(repo_diff):
-                update_event_status(
-                    db, event_id, status="skipped", error_message="declined by confirm callback"
-                )
-                result.per_repo.append(RepoApplyResult(repo_id=repo_diff.repo_id, status="skipped"))
-                continue
-
-            try:
-                if self.via_pr:
-                    assert branch_name is not None  # set above when via_pr=True
-                    outcome = self._apply_via_pr(gh, repo_diff, branch_name, op_id)
-                else:
-                    commit_sha, blob_sha = self._push_file(gh, repo_diff.repo_id)
-                    outcome = _ApplyOutcome(
-                        status="applied",
-                        commit_sha=commit_sha,
-                        blob_sha=blob_sha,
-                        pr_number=None,
-                        pr_branch=None,
-                    )
-            except BranchConflictError as exc:
-                update_event_status(
-                    db,
-                    event_id,
-                    status="skipped",
-                    error_class="conflict",
-                    error_message=str(exc),
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="skipped",
-                        error_class="conflict",
-                        error_message=str(exc),
-                    )
-                )
-                continue
-            except GithubException as exc:
-                err_class = classify_error(exc)
-                update_event_status(
-                    db,
-                    event_id,
-                    status="failed",
-                    error_class=err_class,
-                    error_message=str(exc),
-                    applied_at=now_iso(),
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="failed",
-                        error_class=err_class,
-                        error_message=str(exc),
-                    )
-                )
-                continue
-
-            update_event_status(
-                db,
-                event_id,
-                status="applied",
-                commit_sha=outcome.commit_sha,
-                applied_blob_sha=outcome.blob_sha,
-                applied_at=now_iso(),
-                pr_number=outcome.pr_number,
-                pr_branch=outcome.pr_branch,
-            )
-            result.per_repo.append(
-                RepoApplyResult(
-                    repo_id=repo_diff.repo_id,
-                    status="applied",
-                    commit_sha=outcome.commit_sha,
-                    applied_blob_sha=outcome.blob_sha,
-                )
-            )
-
-        return result
+    def _direct_write(
+        self, gh: RateLimitedClient, repo_diff: RepoDiff
+    ) -> WriteOutcome:
+        commit_sha, blob_sha = self._push_file(gh, repo_diff.repo_id)
+        return WriteOutcome(commit_sha=commit_sha, blob_sha=blob_sha)
 
     def _push_file(
         self, gh: RateLimitedClient, repo_id: str, *, branch: str | None = None
@@ -326,7 +215,7 @@ class AddFile(Op):
         repo_diff: RepoDiff,
         branch_name: str,
         op_id: str,
-    ) -> _ApplyOutcome:
+    ) -> WriteOutcome:
         """The via-pr applies a write on a fresh tacon branch + opens a PR.
 
         Step order:
@@ -352,8 +241,7 @@ class AddFile(Op):
             title=f"tacon: {self.message}",
             body=_build_pr_body(self, repo_diff, op_id),
         )
-        return _ApplyOutcome(
-            status="applied",
+        return WriteOutcome(
             commit_sha=commit_sha,
             blob_sha=blob_sha,
             pr_number=pr_number,
@@ -516,12 +404,6 @@ def _build_pr_body(op: AddFile, repo_diff: RepoDiff, op_id: str) -> str:
         f"`tacon rollback {op_id}` locally._"
     )
     return summary + diff_block + footer
-
-
-def _new_op_id() -> str:
-    import uuid
-
-    return str(uuid.uuid4())
 
 
 # Register on import so cli.rollback / cli.run can find the class by name

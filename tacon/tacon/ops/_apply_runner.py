@@ -1,0 +1,215 @@
+"""Shared per-repo apply boilerplate for content-write ops.
+
+The four content-write ops (AddFile, DeleteFile, AddCIWorkflow,
+FixCIWorkflow) all run the same per-repo apply loop: insert planned
+event → blocked check → confirm callback → try direct-or-via-pr →
+catch BranchConflictError → catch GithubException → update event +
+record result. ~100 lines × 4 ops of mostly-identical code.
+
+This module factors that loop into ``run_per_repo_apply``. Each op
+supplies the two writer callables (direct write, via-pr write) and
+the helper handles the rest.
+
+AddBranchProtection deliberately does NOT use this helper: it has a
+survey mode + write mode + ``prior_state_json`` snapshot that doesn't
+fit the WriteOutcome shape, and it lacks via-pr support entirely.
+
+The ``_`` prefix on the module excludes it from
+``tacon.ops._ensure_discovered`` (which would otherwise try to call
+``register()`` on import).
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from github import GithubException
+
+from tacon import __version__
+from tacon.db import insert_event, now_iso, update_event_status
+from tacon.github_client import classify_error
+from tacon.ops import ApplyResult, ConfirmCallback, Diff, RepoApplyResult, RepoDiff
+from tacon.ops._via_pr import BranchConflictError, via_pr_branch_name
+
+if TYPE_CHECKING:
+    from sqlite_utils import Database
+
+    from tacon.github_client import RateLimitedClient
+
+
+@dataclass(frozen=True)
+class WriteOutcome:
+    """Success payload returned by an op's direct or via-pr writer.
+
+    ``pr_number`` and ``pr_branch`` stay ``None`` for direct-write
+    outcomes and are set by via-pr writers. The helper threads them
+    through to ``events`` and ``RepoApplyResult`` uniformly.
+    """
+
+    commit_sha: str
+    blob_sha: str
+    pr_number: int | None = None
+    pr_branch: str | None = None
+
+
+DirectWriter = Callable[["RateLimitedClient", RepoDiff], "WriteOutcome | None"]
+ViaPRWriter = Callable[["RateLimitedClient", RepoDiff, str, str], "WriteOutcome | None"]
+
+
+def new_op_id() -> str:
+    """UUIDv4 op_id used by every Op's apply(). Stable across all writers."""
+    return str(uuid.uuid4())
+
+
+def run_per_repo_apply(
+    *,
+    op_class_name: str,
+    op_args: dict[str, object],
+    via_pr: bool,
+    db: Database,
+    gh: RateLimitedClient,
+    diff: Diff,
+    confirm: ConfirmCallback,
+    direct_write: DirectWriter,
+    via_pr_write: ViaPRWriter | None = None,
+    race_skipped_message: str = "state changed since plan",
+) -> ApplyResult:
+    """Run the per-repo apply loop for a content-write op.
+
+    The writer callables yield a :class:`WriteOutcome` on success or
+    ``None`` to signal a race (state changed between plan and apply —
+    the helper records a ``skipped`` event with ``race_skipped_message``).
+
+    Pass ``via_pr_write=None`` for ops that don't support via-pr; in that
+    case the helper ignores ``via_pr`` entirely.
+    """
+    op_id = new_op_id()
+    op_args_json = json.dumps(op_args, sort_keys=True)
+    result = ApplyResult(op_id=op_id, per_repo=[])
+
+    via_pr_enabled = via_pr and via_pr_write is not None
+    branch_name = via_pr_branch_name(op_class_name, op_id) if via_pr_enabled else None
+
+    for repo_diff in diff.per_repo:
+        event_id = insert_event(
+            db,
+            op_id=op_id,
+            op_class=op_class_name,
+            op_args_json=op_args_json,
+            tacon_version=__version__,
+            repo_id=repo_diff.repo_id,
+            student_id=repo_diff.student_id,
+            status="planned",
+        )
+
+        if repo_diff.blocked:
+            update_event_status(
+                db,
+                event_id,
+                status="skipped",
+                error_message=repo_diff.blocked_reason,
+            )
+            result.per_repo.append(
+                RepoApplyResult(
+                    repo_id=repo_diff.repo_id,
+                    status="skipped",
+                    error_message=repo_diff.blocked_reason,
+                )
+            )
+            continue
+
+        if not confirm(repo_diff):
+            update_event_status(
+                db,
+                event_id,
+                status="skipped",
+                error_message="declined by confirm callback",
+            )
+            result.per_repo.append(
+                RepoApplyResult(repo_id=repo_diff.repo_id, status="skipped")
+            )
+            continue
+
+        try:
+            if branch_name is not None:
+                assert via_pr_write is not None  # set above when branch_name is set
+                outcome = via_pr_write(gh, repo_diff, branch_name, op_id)
+            else:
+                outcome = direct_write(gh, repo_diff)
+        except BranchConflictError as exc:
+            update_event_status(
+                db,
+                event_id,
+                status="skipped",
+                error_class="conflict",
+                error_message=str(exc),
+            )
+            result.per_repo.append(
+                RepoApplyResult(
+                    repo_id=repo_diff.repo_id,
+                    status="skipped",
+                    error_class="conflict",
+                    error_message=str(exc),
+                )
+            )
+            continue
+        except GithubException as exc:
+            err_class = classify_error(exc)
+            update_event_status(
+                db,
+                event_id,
+                status="failed",
+                error_class=err_class,
+                error_message=str(exc),
+                applied_at=now_iso(),
+            )
+            result.per_repo.append(
+                RepoApplyResult(
+                    repo_id=repo_diff.repo_id,
+                    status="failed",
+                    error_class=err_class,
+                    error_message=str(exc),
+                )
+            )
+            continue
+
+        if outcome is None:
+            update_event_status(
+                db,
+                event_id,
+                status="skipped",
+                error_message=race_skipped_message,
+            )
+            result.per_repo.append(
+                RepoApplyResult(
+                    repo_id=repo_diff.repo_id,
+                    status="skipped",
+                    error_message=race_skipped_message,
+                )
+            )
+            continue
+
+        update_event_status(
+            db,
+            event_id,
+            status="applied",
+            commit_sha=outcome.commit_sha,
+            applied_blob_sha=outcome.blob_sha,
+            applied_at=now_iso(),
+            pr_number=outcome.pr_number,
+            pr_branch=outcome.pr_branch,
+        )
+        result.per_repo.append(
+            RepoApplyResult(
+                repo_id=repo_diff.repo_id,
+                status="applied",
+                commit_sha=outcome.commit_sha,
+                applied_blob_sha=outcome.blob_sha,
+            )
+        )
+
+    return result
