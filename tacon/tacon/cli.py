@@ -12,6 +12,13 @@ from rich.console import Console
 from rich.table import Table
 
 from tacon import __version__
+from tacon.classes import (
+    ClassesConfigError,
+    add_classroom,
+    load_classes,
+    resolve_db_path,
+    set_default,
+)
 from tacon.classroom import (
     GhClassroomError,
     discover_via_csv,
@@ -54,6 +61,28 @@ def _default_db_path() -> Path:
     return home / "tacon.db"
 
 
+def _resolve_db(
+    db_path: Path | None,
+    classroom: str | None,
+) -> Path:
+    """Pick the DB path using --db / --classroom / classes.toml / legacy default.
+
+    See ``tacon.classes.resolve_db_path`` for the precedence rules.
+    Exits with code 2 on a malformed ``classes.toml`` or unknown
+    ``--classroom`` id so the CLI prints a clear error instead of a
+    Python traceback.
+    """
+    try:
+        return resolve_db_path(
+            explicit_db=db_path,
+            classroom_id=classroom,
+            default_db=_default_db_path(),
+        )
+    except ClassesConfigError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(2) from exc
+
+
 # ---------- sync ----------
 
 
@@ -71,9 +100,17 @@ def sync(
         ),
     ] = None,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
+    classroom: Annotated[
+        str | None,
+        typer.Option(
+            "--classroom",
+            help="Classroom id from ~/.tacon/classes.toml. "
+            "Ignored when --db is given. See `tacon classroom list`.",
+        ),
+    ] = None,
 ) -> None:
     """Discover assignments + students + repos and populate the local DB."""
-    db = open_db(db_path or _default_db_path())
+    db = open_db(_resolve_db(db_path, classroom))
 
     try:
         if from_csv:
@@ -177,6 +214,14 @@ def run(
     ] = False,
     rate: Annotated[float, typer.Option("--rate", help="Max API calls/sec.")] = 3.0,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
+    classroom: Annotated[
+        str | None,
+        typer.Option(
+            "--classroom",
+            help="Classroom id from ~/.tacon/classes.toml. "
+            "Ignored when --db is given. See `tacon classroom list`.",
+        ),
+    ] = None,
 ) -> None:
     """Plan or apply an Op across all active repos in scope."""
     op: Op
@@ -283,7 +328,7 @@ def run(
         err_console.print(f"Unknown op: {op_name}. Available: {list_ops()}")
         raise typer.Exit(2)
 
-    db = open_db(db_path or _default_db_path())
+    db = open_db(_resolve_db(db_path, classroom))
     gh = RateLimitedClient(rate_per_sec=rate)
 
     diff = op.plan(db, gh)
@@ -305,9 +350,17 @@ def rollback(
     op_id: Annotated[str, typer.Argument(help="op_id from a prior apply.")],
     rate: Annotated[float, typer.Option("--rate", help="Max API calls/sec.")] = 3.0,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
+    classroom: Annotated[
+        str | None,
+        typer.Option(
+            "--classroom",
+            help="Classroom id from ~/.tacon/classes.toml. "
+            "Ignored when --db is given. See `tacon classroom list`.",
+        ),
+    ] = None,
 ) -> None:
     """Reverse a prior apply. Blob-SHA-safe: never deletes student work."""
-    db = open_db(db_path or _default_db_path())
+    db = open_db(_resolve_db(db_path, classroom))
     op_class = get_op_class_for_op_id(db, op_id)
     if op_class is None:
         err_console.print(f"No events found for op_id={op_id}")
@@ -362,6 +415,14 @@ def resume(
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip per-repo confirms.")] = False,
     rate: Annotated[float, typer.Option("--rate", help="Max API calls/sec.")] = 3.0,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
+    classroom: Annotated[
+        str | None,
+        typer.Option(
+            "--classroom",
+            help="Classroom id from ~/.tacon/classes.toml. "
+            "Ignored when --db is given. See `tacon classroom list`.",
+        ),
+    ] = None,
 ) -> None:
     """Re-run apply for repos where the original op left status='failed'.
 
@@ -370,7 +431,7 @@ def resume(
     (with its own op_id) — original failed events are kept for audit and
     annotated with a pointer to the resume op_id.
     """
-    db = open_db(db_path or _default_db_path())
+    db = open_db(_resolve_db(db_path, classroom))
     failed = get_events_by_op(db, op_id, status="failed")
     if not failed:
         console.print(f"[yellow]No failed events for op_id={op_id}.[/yellow]")
@@ -561,6 +622,14 @@ def _opt_str(value: object) -> str | None:
 @app.command()
 def ui(
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
+    classroom: Annotated[
+        str | None,
+        typer.Option(
+            "--classroom",
+            help="Classroom id from ~/.tacon/classes.toml. "
+            "Ignored when --db is given. See `tacon classroom list`.",
+        ),
+    ] = None,
 ) -> None:
     """Open the read-only TUI: ops on the left, events on the right."""
     try:
@@ -572,7 +641,7 @@ def ui(
         )
         raise typer.Exit(2) from exc
 
-    app_inst = TaconApp(db_path or _default_db_path())
+    app_inst = TaconApp(_resolve_db(db_path, classroom))
     app_inst.run()
 
 
@@ -606,6 +675,14 @@ def dashboard(
     ] = None,
     rate: Annotated[float, typer.Option("--rate", help="Max API calls/sec.")] = 3.0,
     db_path: Annotated[Path, typer.Option("--db", help="Path to the tacon SQLite DB.")] = None,  # type: ignore[assignment]
+    classroom: Annotated[
+        str | None,
+        typer.Option(
+            "--classroom",
+            help="Classroom id from ~/.tacon/classes.toml. "
+            "Ignored when --db is given. See `tacon classroom list`.",
+        ),
+    ] = None,
 ) -> None:
     """Render the events table to a static HTML dashboard.
 
@@ -617,7 +694,7 @@ def dashboard(
     from tacon.dashboard import PublishError, publish_to_gh_pages, render
 
     out_dir = out or (Path.cwd() / "tacon-dashboard")
-    db = open_db(db_path or _default_db_path())
+    db = open_db(_resolve_db(db_path, classroom))
     stats = render(db, out_dir)
     console.print(
         f"[green]✓[/green] Rendered {stats['ops']} ops, {stats['events']} events, "
@@ -653,6 +730,106 @@ def dashboard(
         )
 
 
+# ---------- classroom subcommand ----------
+
+
+classroom_app = typer.Typer(
+    name="classroom",
+    help="Manage classrooms in ~/.tacon/classes.toml (multi-classroom support).",
+    no_args_is_help=True,
+)
+app.add_typer(classroom_app)
+
+
+@classroom_app.command("list")
+def classroom_list() -> None:
+    """Show classrooms registered in ~/.tacon/classes.toml.
+
+    Prints a one-line message and exits if the file doesn't exist (the
+    legacy single-DB mode). Use ``tacon classroom add`` to create the
+    index by adding a first entry.
+    """
+    try:
+        config = load_classes()
+    except ClassesConfigError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(2) from exc
+
+    if config is None or not config.classrooms:
+        console.print(
+            "[dim]No classrooms registered. Run "
+            "`tacon classroom add <id> --db PATH` to create the index.[/dim]"
+        )
+        console.print(f"Legacy default DB: {_default_db_path()}")
+        return
+
+    table = Table(title="Classrooms", show_lines=False)
+    table.add_column("id")
+    table.add_column("db_path")
+    table.add_column("description")
+    table.add_column("default")
+    for cid in config.list_ids():
+        c = config.classrooms[cid]
+        marker = "[green]*[/green]" if cid == config.default else ""
+        table.add_row(cid, c.db_path, c.description, marker)
+    console.print(table)
+
+
+@classroom_app.command("add")
+def classroom_add(
+    classroom_id: Annotated[
+        str, typer.Argument(help="Short id (e.g. 'cs101-spring').")
+    ],
+    db: Annotated[
+        Path, typer.Option("--db", help="Path to the SQLite DB for this classroom.")
+    ],
+    description: Annotated[
+        str, typer.Option("--description", help="Optional human-readable label.")
+    ] = "",
+    make_default: Annotated[
+        bool,
+        typer.Option(
+            "--default",
+            help="Mark this classroom as the default for commands that omit --classroom.",
+        ),
+    ] = False,
+) -> None:
+    """Register a classroom in ~/.tacon/classes.toml.
+
+    Re-adding an existing id overwrites its db_path/description (useful
+    for moving a classroom DB). If no default is set yet, the first
+    added classroom becomes the default automatically.
+    """
+    try:
+        config = add_classroom(
+            classroom_id=classroom_id,
+            db_path=str(db),
+            description=description,
+            make_default=make_default,
+        )
+    except ClassesConfigError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(2) from exc
+    is_default = config.default == classroom_id
+    console.print(
+        f"[green]✓[/green] Registered classroom [bold]{classroom_id}[/bold] "
+        f"-> {db}" + (" [dim](default)[/dim]" if is_default else "")
+    )
+
+
+@classroom_app.command("set-default")
+def classroom_set_default(
+    classroom_id: Annotated[str, typer.Argument(help="Classroom id to mark as default.")],
+) -> None:
+    """Change which classroom is used when --classroom is omitted."""
+    try:
+        set_default(classroom_id)
+    except ClassesConfigError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(2) from exc
+    console.print(f"[green]✓[/green] Default classroom set to [bold]{classroom_id}[/bold]")
+
+
 # ---------- version ----------
 
 
@@ -660,7 +837,22 @@ def dashboard(
 def version() -> None:
     """Print version + DB path."""
     console.print(f"tacon {__version__}")
-    console.print(f"db: {_default_db_path()}")
+    try:
+        config = load_classes()
+    except ClassesConfigError as exc:
+        err_console.print(f"classes.toml: {exc}")
+        config = None
+    if config and config.classrooms:
+        default = config.get_default()
+        if default is not None:
+            console.print(
+                f"db: {default.expanded_db_path()} "
+                f"[dim](classroom={default.id})[/dim]"
+            )
+        else:
+            console.print(f"db: {_default_db_path()} [dim](no default classroom set)[/dim]")
+    else:
+        console.print(f"db: {_default_db_path()}")
 
 
 # ---------- printers ----------

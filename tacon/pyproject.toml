@@ -29,6 +29,8 @@ dependencies = [
     "sqlite-utils >= 3.36",
     "jinja2 >= 3.1",
     "PyYAML >= 6.0",
+    # tomllib is stdlib on 3.11+; tomli is the same parser, vendored, for 3.10.
+    "tomli >= 2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -73,7 +75,7 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["github.*", "sqlite_utils.*"]
+module = ["github.*", "sqlite_utils.*", "tomli"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
