@@ -681,7 +681,7 @@ before touching code. Key sections:
 | Step | Status | Title | Estimated |
 |---|---|---|---|
 | 0 | ✅ DONE (`ec6d384`) | Op.arg_schema() on all 5 ops | 2.5h |
-| 1 | ✅ DONE (`b2c2318`) | tacon serve skeleton (FastAPI + CLI) | 4h |
+| 1 | ✅ DONE (`b2c2318`) + ✅ live-validated | tacon serve skeleton (FastAPI + CLI) | 4h |
 | 2 | NEXT | API: op listing + plan/apply/rollback + SSE | 10h |
 | 3 | | Vite + React + shadcn scaffold | 3h |
 | 4 | | Settings page first | 5h |
@@ -693,6 +693,20 @@ before touching code. Key sections:
 | 9 | | Polish (loading/empty/error states, theme) | 3h |
 | 10 | | CI/CD: build SPA in GitHub Actions | 3h |
 | 11 | | Release v0.3.0 | 1h |
+
+**Step 1 was live-validated** (not just unit-tested) — booted
+`tacon serve --no-open --port 5734` and exercised: `/healthz` returns 200
++ correct version; `Host: localhost`, `Host: localhost:5734`,
+`Host: 127.0.0.1` all 200; `Host: evil.example.com` and
+`Host: 192.168.1.10` both 403 with named-host detail message; `/`,
+`/does-not-exist`, `/docs`, `/openapi.json` all 404 (the auto docs are
+intentionally disabled); second-server-same-port exits 2 with a clear
+*"already in use"* message; second-server-auto-pick falls through to
+port 5735. No surprises — the unit tests had it right. **One note for
+Step 3:** `GET /` returns 404 today (no SPA mounted). Once the SPA dist
+is bundled at Step 3/Step 10, `/` needs a static-file mount to serve
+`tacon/web/dist/index.html`. That's the correct skeleton behavior — just
+flagging so the next agent doesn't think the SPA is missing.
 
 **Step 2 is the natural next pickup.** Concretely: add `GET /api/ops`,
 `POST /api/ops/{name}/plan`, `POST /api/ops/{name}/apply` (background
