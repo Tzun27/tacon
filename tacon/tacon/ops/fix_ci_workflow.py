@@ -27,10 +27,8 @@ from typing import TYPE_CHECKING
 
 from github import GithubException, UnknownObjectException
 
-from tacon import __version__
 from tacon.db import (
     get_events_by_op,
-    insert_event,
     list_active_repos,
     now_iso,
     update_event_status,
@@ -41,18 +39,16 @@ from tacon.ops import (
     ConfirmCallback,
     Diff,
     Op,
-    RepoApplyResult,
     RepoDiff,
     RepoRollbackResult,
     RollbackResult,
     register,
 )
+from tacon.ops._apply_runner import WriteOutcome, run_per_repo_apply
 from tacon.ops._via_pr import (
-    BranchConflictError,
     close_pr_and_delete_branch,
     ensure_branch,
     open_or_find_pr,
-    via_pr_branch_name,
 )
 from tacon.ops.add_ci_workflow import _NAME_RE, WorkflowValidationError
 
@@ -199,130 +195,27 @@ class FixCIWorkflow(Op):
         diff: Diff,
         confirm: ConfirmCallback,
     ) -> ApplyResult:
-        op_id = _new_op_id()
-        op_args_json = json.dumps(self.args, sort_keys=True)
-        result = ApplyResult(op_id=op_id, per_repo=[])
-        branch_name = via_pr_branch_name(OP_CLASS, op_id) if self.via_pr else None
+        return run_per_repo_apply(
+            op_class_name=OP_CLASS,
+            op_args=self.args,
+            via_pr=self.via_pr,
+            db=db,
+            gh=gh,
+            diff=diff,
+            confirm=confirm,
+            direct_write=self._direct_write,
+            via_pr_write=self._apply_via_pr,
+            race_skipped_message="transform no longer applies (state changed since plan)",
+        )
 
-        for repo_diff in diff.per_repo:
-            event_id = insert_event(
-                db,
-                op_id=op_id,
-                op_class=OP_CLASS,
-                op_args_json=op_args_json,
-                tacon_version=__version__,
-                repo_id=repo_diff.repo_id,
-                student_id=repo_diff.student_id,
-                status="planned",
-            )
-
-            if repo_diff.blocked:
-                update_event_status(
-                    db,
-                    event_id,
-                    status="skipped",
-                    error_message=repo_diff.blocked_reason,
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="skipped",
-                        error_message=repo_diff.blocked_reason,
-                    )
-                )
-                continue
-
-            if not confirm(repo_diff):
-                update_event_status(
-                    db, event_id, status="skipped", error_message="declined by confirm callback"
-                )
-                result.per_repo.append(RepoApplyResult(repo_id=repo_diff.repo_id, status="skipped"))
-                continue
-
-            try:
-                if self.via_pr:
-                    assert branch_name is not None
-                    via_outcome = self._apply_via_pr(gh, repo_diff, branch_name, op_id)
-                else:
-                    direct_outcome = self._patch(gh, repo_diff.repo_id)
-                    via_outcome = (direct_outcome, None)
-            except BranchConflictError as exc:
-                update_event_status(
-                    db,
-                    event_id,
-                    status="skipped",
-                    error_class="conflict",
-                    error_message=str(exc),
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="skipped",
-                        error_class="conflict",
-                        error_message=str(exc),
-                    )
-                )
-                continue
-            except GithubException as exc:
-                err_class = classify_error(exc)
-                update_event_status(
-                    db,
-                    event_id,
-                    status="failed",
-                    error_class=err_class,
-                    error_message=str(exc),
-                    applied_at=now_iso(),
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="failed",
-                        error_class=err_class,
-                        error_message=str(exc),
-                    )
-                )
-                continue
-
-            patch_outcome, pr_number = via_outcome
-            if patch_outcome is None:
-                # Race: between plan and apply, the file was already patched
-                # (or removed). Record as skipped.
-                update_event_status(
-                    db,
-                    event_id,
-                    status="skipped",
-                    error_message="transform no longer applies (state changed since plan)",
-                )
-                result.per_repo.append(
-                    RepoApplyResult(
-                        repo_id=repo_diff.repo_id,
-                        status="skipped",
-                        error_message="state changed since plan",
-                    )
-                )
-                continue
-
-            commit_sha, blob_sha = patch_outcome
-            update_event_status(
-                db,
-                event_id,
-                status="applied",
-                commit_sha=commit_sha,
-                applied_blob_sha=blob_sha,
-                applied_at=now_iso(),
-                pr_number=pr_number,
-                pr_branch=branch_name if pr_number is not None else None,
-            )
-            result.per_repo.append(
-                RepoApplyResult(
-                    repo_id=repo_diff.repo_id,
-                    status="applied",
-                    commit_sha=commit_sha,
-                    applied_blob_sha=blob_sha,
-                )
-            )
-
-        return result
+    def _direct_write(
+        self, gh: RateLimitedClient, repo_diff: RepoDiff
+    ) -> WriteOutcome | None:
+        outcome = self._patch(gh, repo_diff.repo_id)
+        if outcome is None:
+            return None  # signals race-skip to the helper
+        commit_sha, blob_sha = outcome
+        return WriteOutcome(commit_sha=commit_sha, blob_sha=blob_sha)
 
     def _patch(
         self, gh: RateLimitedClient, repo_id: str, *, branch: str | None = None
@@ -363,13 +256,13 @@ class FixCIWorkflow(Op):
         repo_diff: RepoDiff,
         branch_name: str,
         op_id: str,
-    ) -> tuple[tuple[str, str] | None, int | None]:
-        """Branch + patch + open PR. Returns (patch_outcome, pr_number).
+    ) -> WriteOutcome | None:
+        """Branch + patch + open PR. Returns the WriteOutcome, or None on race.
 
         Threads `branch=` into `_patch`. If `_patch` returns None (the
         transform is now a no-op against this repo's HEAD — race between
-        plan and apply), we skip without opening a PR; the caller maps
-        this to a `skipped` event with the existing race message.
+        plan and apply), we skip without opening a PR; the helper maps
+        None to a `skipped` event with the configured race message.
         """
         repo = gh.get_repo(repo_diff.repo_id)
         default_branch = repo.default_branch
@@ -379,7 +272,8 @@ class FixCIWorkflow(Op):
         ensure_branch(gh, repo, branch_name, base_sha)
         patch_outcome = self._patch(gh, repo_diff.repo_id, branch=branch_name)
         if patch_outcome is None:
-            return None, None
+            return None
+        commit_sha, blob_sha = patch_outcome
         pr_number = open_or_find_pr(
             gh,
             repo,
@@ -388,7 +282,12 @@ class FixCIWorkflow(Op):
             title=f"tacon: {self.message}",
             body=_build_pr_body(self, repo_diff, op_id),
         )
-        return patch_outcome, pr_number
+        return WriteOutcome(
+            commit_sha=commit_sha,
+            blob_sha=blob_sha,
+            pr_number=pr_number,
+            pr_branch=branch_name,
+        )
 
     # ---------- rollback ----------
 
@@ -620,12 +519,6 @@ def _count_changed_lines(old: bytes, new: bytes) -> tuple[int, int]:
     added = sum(1 for line in diff if line.startswith("+ "))
     removed = sum(1 for line in diff if line.startswith("- "))
     return added, removed
-
-
-def _new_op_id() -> str:
-    import uuid
-
-    return str(uuid.uuid4())
 
 
 # Register on import so cli.rollback / cli.run can find the class by name
