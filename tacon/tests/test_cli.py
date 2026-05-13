@@ -1186,3 +1186,151 @@ def _extract_op_id(output: str) -> str:
     )
     assert match, f"no op_id found in output: {output[:300]}"
     return match.group(1)
+
+
+# ---------- classroom subcommand + --classroom flag ----------
+
+
+@pytest.fixture
+def tacon_home(tmp_path: Path, monkeypatch) -> Path:
+    """Isolate TACON_HOME to a tmp dir so each test owns its classes.toml."""
+    home = tmp_path / "tacon-home"
+    home.mkdir()
+    monkeypatch.setenv("TACON_HOME", str(home))
+    return home
+
+
+def test_classroom_list_when_no_config(tacon_home: Path) -> None:
+    result = runner.invoke(app, ["classroom", "list"])
+    assert result.exit_code == 0
+    assert "No classrooms registered" in result.stdout
+
+
+def test_classroom_add_creates_classes_toml(tacon_home: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "classroom", "add", "cs101-spring",
+            "--db", str(tacon_home / "cs101-spring.db"),
+            "--description", "CS101 Spring 2026",
+        ],
+    )
+    assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
+    assert "Registered classroom" in result.stdout
+    assert (tacon_home / "classes.toml").exists()
+
+    # And `list` now shows the entry as default (first-add gets the marker).
+    listed = runner.invoke(app, ["classroom", "list"])
+    assert listed.exit_code == 0
+    assert "cs101-spring" in listed.stdout
+    assert "CS101 Spring 2026" in listed.stdout
+
+
+def test_classroom_add_with_default_flag(tacon_home: Path) -> None:
+    runner.invoke(app, ["classroom", "add", "first", "--db", str(tacon_home / "a.db")])
+    res = runner.invoke(
+        app,
+        ["classroom", "add", "second", "--db", str(tacon_home / "b.db"), "--default"],
+    )
+    assert res.exit_code == 0
+    # version's classroom line tells us which is default
+    ver = runner.invoke(app, ["version"])
+    assert ver.exit_code == 0
+    assert "classroom=second" in ver.stdout
+
+
+def test_classroom_set_default_changes_pointer(tacon_home: Path) -> None:
+    runner.invoke(app, ["classroom", "add", "first", "--db", str(tacon_home / "a.db")])
+    runner.invoke(app, ["classroom", "add", "second", "--db", str(tacon_home / "b.db")])
+    res = runner.invoke(app, ["classroom", "set-default", "second"])
+    assert res.exit_code == 0
+    assert "Default classroom set to" in res.stdout
+
+    ver = runner.invoke(app, ["version"])
+    assert "classroom=second" in ver.stdout
+
+
+def test_classroom_set_default_unknown_id_exits_2(tacon_home: Path) -> None:
+    runner.invoke(app, ["classroom", "add", "first", "--db", str(tacon_home / "a.db")])
+    res = runner.invoke(app, ["classroom", "set-default", "nope"])
+    assert res.exit_code == 2
+    output = (res.stdout or "") + (res.stderr or "")
+    assert "unknown classroom" in output
+
+
+def test_classroom_list_shows_invalid_toml_error(tacon_home: Path) -> None:
+    (tacon_home / "classes.toml").write_text("not = valid [[ toml", encoding="utf-8")
+    res = runner.invoke(app, ["classroom", "list"])
+    assert res.exit_code == 2
+
+
+def test_run_with_classroom_flag_resolves_correct_db(
+    tacon_home: Path, tmp_path: Path
+) -> None:
+    """--classroom <id> points sync at the DB recorded in classes.toml."""
+    # Two DBs registered, --classroom picks one.
+    db_a = tmp_path / "a.db"
+    db_b = tmp_path / "b.db"
+    runner.invoke(app, ["classroom", "add", "ca", "--db", str(db_a)])
+    runner.invoke(app, ["classroom", "add", "cb", "--db", str(db_b)])
+
+    # sync --from-csv writes events to the resolved DB. We just need to
+    # check which DB file got initialized (sync runs open_db at the start).
+    csv = tmp_path / "roster.csv"
+    csv.write_text("assignment_slug,student_username,repo_url\n", encoding="utf-8")
+
+    res = runner.invoke(
+        app,
+        ["sync", "--from-csv", str(csv), "--classroom", "cb"],
+    )
+    # Empty CSV is fine; what matters is which DB was opened.
+    assert res.exit_code == 0, (res.stdout or "") + (res.stderr or "")
+    assert db_b.exists()
+    # And we did NOT accidentally open ca's DB.
+    assert not db_a.exists()
+
+
+def test_run_unknown_classroom_exits_2(tacon_home: Path, tmp_path: Path) -> None:
+    """--classroom names an id that doesn't exist in classes.toml."""
+    runner.invoke(app, ["classroom", "add", "ca", "--db", str(tmp_path / "a.db")])
+    csv = tmp_path / "roster.csv"
+    csv.write_text("assignment_slug,student_username,repo_url\n", encoding="utf-8")
+    res = runner.invoke(
+        app,
+        ["sync", "--from-csv", str(csv), "--classroom", "nope"],
+    )
+    assert res.exit_code == 2
+    output = (res.stdout or "") + (res.stderr or "")
+    assert "unknown classroom" in output
+
+
+def test_explicit_db_beats_classroom(tacon_home: Path, tmp_path: Path) -> None:
+    """--db wins when both --db and --classroom are given."""
+    classroom_db = tmp_path / "classroom.db"
+    runner.invoke(app, ["classroom", "add", "ca", "--db", str(classroom_db)])
+
+    explicit_db = tmp_path / "explicit.db"
+    csv = tmp_path / "roster.csv"
+    csv.write_text("assignment_slug,student_username,repo_url\n", encoding="utf-8")
+
+    res = runner.invoke(
+        app,
+        ["sync", "--from-csv", str(csv), "--classroom", "ca", "--db", str(explicit_db)],
+    )
+    assert res.exit_code == 0
+    assert explicit_db.exists()
+    assert not classroom_db.exists()  # bypassed
+
+
+def test_default_classroom_used_when_flag_omitted(
+    tacon_home: Path, tmp_path: Path
+) -> None:
+    """No --classroom flag but classes.toml has a default — uses it."""
+    default_db = tmp_path / "default.db"
+    runner.invoke(app, ["classroom", "add", "cdef", "--db", str(default_db)])
+
+    csv = tmp_path / "roster.csv"
+    csv.write_text("assignment_slug,student_username,repo_url\n", encoding="utf-8")
+    res = runner.invoke(app, ["sync", "--from-csv", str(csv)])
+    assert res.exit_code == 0
+    assert default_db.exists()
