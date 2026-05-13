@@ -71,7 +71,7 @@ two parts you can't skip.
 ```bash
 cd /home/tzun/repos/gstack-test/tacon
 git status --short                   # clean (or just .gitignored .env / .venv / dist / tacon-dashboard)
-git log --oneline | head -5          # confirm the §4.5 version-bump commit is the tip
+git log --oneline | head -5          # tip should be the latest handoff-doc commit
 .venv/bin/pytest -q --no-cov --ignore=tests/live   # 407 unit tests pass in ~30s
 .venv/bin/ruff check . && .venv/bin/mypy tacon     # both clean
 ```
@@ -871,3 +871,72 @@ literal next coding step.
    GUI testing once a build is shippable; `/review` before each v0.3
    milestone commit.
 9. `/context-save` at the end of your session and update this file.
+
+---
+
+## 10 · Resume prompt for the next session
+
+When the next session starts, paste this block as the first user message
+so the agent picks up exactly where this one left off:
+
+> Read `/home/tzun/repos/gstack-test/tacon/next_session.md` top-to-bottom
+> (focus §-1 commit story, §1 code map, §9 v0.3 GUI roadmap) and the
+> design doc at
+> `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md` (focus
+> the "Op Schema → Form Bridge" section, "Sub-scope for v0.3" items 1-7,
+> "Distribution Plan", and **Step 3 in Next Steps** — that's your
+> target).
+>
+> State: tacon v0.3 GUI is in progress on `main`. Steps 0 + 1 + 2 of 11
+> are done. Working tree clean. **407 unit tests pass**; ruff + mypy
+> clean across 24 source files. All v0.3 commits pushed to `origin/main`.
+>
+> Implement **Step 3 — Vite + React + shadcn scaffold** (~3h):
+>
+> 1. Confirm `node` (≥20) and `pnpm` (≥9) are installed. If either is
+>    missing **stop and ask me** — don't try to install them yourself
+>    (system-level package managers need my call). Try `node --version`
+>    and `pnpm --version` first.
+> 2. Create `tacon/web/` and scaffold a Vite + React + TypeScript project
+>    (`pnpm create vite@latest . --template react-ts`, then strip the
+>    boilerplate to a minimal `App.tsx` that just renders a placeholder
+>    "tacon v0.3" heading). Pin every dependency version in
+>    `package.json` so CI is deterministic.
+> 3. Generate the shadcn primitives the design doc names:
+>    `npx shadcn@latest add button input textarea switch select card
+>    dialog badge progress table`. The generated `components/ui/*.tsx`
+>    files are committed.
+> 4. Add TanStack Query: `pnpm add @tanstack/react-query`.
+> 5. Wire **static-file mount in `tacon/server.py`**: serve
+>    `tacon/web/dist/*` at `/`, with a clear one-line fallback when the
+>    dist directory is absent (mention `cd tacon/web && pnpm install &&
+>    pnpm build` per the design-doc Distribution Plan). Update the
+>    Step-1 live-validation note in §9 that said `GET /` would 404 —
+>    after Step 3 it serves `index.html`.
+> 6. Add a `Makefile` target or short script `make gui-dev` per the
+>    design doc that runs `pnpm install && pnpm build` in `tacon/web/`,
+>    so the dev story stays one-liner.
+> 7. Tests: one new test in `tests/test_server.py` (or a new
+>    `tests/test_server_spa.py`) that:
+>    - asserts `GET /` returns 200 + `text/html` when the dist exists
+>      (use a tmp dist dir + monkeypatch the dist-resolution path), and
+>    - asserts the friendly-fallback string fires when dist is absent.
+>
+>    The acceptance criterion in the design doc is: `pnpm build`
+>    produces `tacon/web/dist/index.html`; `tacon serve` serves it at
+>    `/`; component-mount test passes.
+>
+> Commit each logical chunk atomically with the existing prefix
+> convention (`chore(tacon)` for scaffolding, `feat(tacon)` for the
+> static-file mount, `test(tacon)` for the new tests, `docs(tacon)` for
+> the handoff-doc update at the end). Run pytest + ruff + mypy before
+> each commit. Wheel-bundling of `tacon/web/dist/` into the Python
+> package is **Step 10** (CI/CD), not Step 3 — don't bring that
+> forward.
+>
+> **Don't** start Step 4 (settings page) in the same session — Step 3 is
+> a natural pause and the wheel-bundling discussion needs my input first.
+>
+> Permission to push to `origin main` is not standing — I'll grant it
+> when you're ready. Same for the open `0.3.0.dev0` version bump
+> question.
