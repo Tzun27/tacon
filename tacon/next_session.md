@@ -63,6 +63,7 @@ two parts you can't skip.
 | `8a52c31` | v0.3 Step 3 | **Vite + React + shadcn scaffold** — new SPA source tree at `tacon/web/`. Vite 8 + React 19 + TypeScript 6; shadcn/ui primitives (radix-nova preset) generated verbatim into `src/components/ui/` (button, input, textarea, switch, select, card, dialog, badge, progress, table); TanStack Query for the HTTP cache, `QueryClientProvider` wired in `main.tsx`. Boilerplate stripped to a minimal `App.tsx` ("tacon v0.3" heading). Tailwind v4 via `@tailwindcss/vite`; `@/*` path alias. Every dep pinned to an exact version (`package.json`) + `pnpm-lock.yaml` committed for deterministic CI. New `Makefile` with a `gui-dev` target (`pnpm install && pnpm build` in `tacon/web/`). |
 | `4f16ac2` | v0.3 Step 3 | **Serve the built SPA at `/`** — `create_app()` mounts `tacon/web/dist/` as static files (`html=True`) when `dist/index.html` exists; when absent (fresh editable install) `GET /` returns a friendly page pointing at the build one-liner instead of a 404. Mount registered last so the catch-all doesn't shadow `/healthz` + `/api/*`. `_spa_dist_dir()` is a module-level resolver tests monkeypatch. |
 | `fa8012e` | v0.3 Step 3 | **SPA mount test coverage** — new `tests/test_server_spa.py` (4 tests): dist-present serves `index.html` as `text/html`, dist-absent serves the build hint, `/healthz` + `/api/ops` survive the catch-all mount, real resolver targets `tacon/web/dist`. |
+| `96b2a35` | v0.3 Step 3 | **`__version__` 0.2.0 → 0.3.0.dev0** — PEP 440 dev release so a wheel built from `main` doesn't claim to be the released 0.2.0. Bumped in `tacon/__init__.py` + `pyproject.toml`. Step 11 flips it to final `0.3.0`. |
 
 **All nine v0.2 items shipped** (§4.1-§4.9). **v0.3 in progress**: Steps
 0 + 1 + 2 + 3 done, Steps 4-11 remaining (see §9 below).
@@ -127,7 +128,7 @@ has drifted since this handoff was written.
 
 ```
 tacon/
-├── __init__.py                       __version__ = "0.2.0"
+├── __init__.py                       __version__ = "0.3.0.dev0"
 ├── cli.py                            Typer app: sync, run (+ --via-pr),
 │                                     rollback, resume (+ --content-from),
 │                                     ui, dashboard, classroom (NEW),
@@ -351,10 +352,11 @@ tacon version
 
 ### Tooling
 
-- `pyproject.toml` — name `tacon`, version `0.2.0` (bumped at the end
-  of v0.2 work, ready for `twine upload`). Adds a conditional
-  `tomli >= 2.0; python_version < '3.11'` for §4.6's TOML reader on
-  Python 3.10. Coverage gate `--cov-fail-under=90`.
+- `pyproject.toml` — name `tacon`, version `0.3.0.dev0` (PEP 440 dev
+  release; bumped at Step 3 so a wheel built from `main` doesn't claim
+  to be the released 0.2.0 — Step 11 flips it to final `0.3.0`). Adds
+  a conditional `tomli >= 2.0; python_version < '3.11'` for §4.6's TOML
+  reader on Python 3.10. Coverage gate `--cov-fail-under=90`.
   `asyncio_mode = "auto"`.
 - `.github/workflows/ci.yml` — matrix on Python 3.10/3.11/3.12.
 - `.venv/` — Python 3.13.5 (dev extras: `pip install -e ".[dev]"`).
@@ -837,10 +839,10 @@ update each tile to the final status as SSE events arrive. If genuine
 in-progress visibility becomes important, the runner could INSERT a
 new row per status change instead of UPDATEing — small refactor.
 
-**Open Question still unanswered:** v0.3.0 version bump strategy.
-Default plan: bump to `0.3.0.dev0` at the start of Step 2 to signal
-in-development, then `0.3.0` at Step 11. Confirm with the user before
-the first bump.
+**Version bump — RESOLVED (Step 3, `96b2a35`).** `__version__` and
+`pyproject.toml` are at `0.3.0.dev0` (PEP 440 dev release) so a wheel
+built from `main` is honestly labelled in-development. Step 11 flips
+it to the final `0.3.0`.
 
 **Don't skip the assignment from the design doc:** *"Before writing
 tacon/server.py: draft the 5 verb-cards in plain Markdown and show them
@@ -865,31 +867,25 @@ though Step 4 (settings page) is the literal next coding step.
    in one session. Logical milestones: after Step 5.5 (renderer), after
    Step 6 (AddFile spine — the keystone), after Step 8 (rollback +
    Past Ops), v0.3.0 release.
-4. **Push unpushed commits** — `ec6d384` + `b2c2318` (Steps 0/1), the 4
-   Step 2 commits (`0511eb2`, `c188a46`, `7b19251`, `6cb8895`), the 3
-   Step 3 commits (`8a52c31`, `4f16ac2`, `fa8012e`) plus this handoff
-   sit above `origin/main`. Direct push to `main` is blocked by Claude
-   Code's permission default — the user runs `git push origin main`
-   themselves.
+4. **Pushing** — all of Steps 0-3 are pushed to `origin/main`. Direct
+   push to `main` is not standing permission: ask the user before
+   `git push`; they grant it per-session.
 5. **For v0.3 work specifically:** the design doc is the contract. Every
    step has an acceptance criterion. Honor them — the spec review
    surfaced 17 gaps that were patched, and skipping the criteria
    re-opens them.
-6. **Before Step 4 — two items need the user's input** (the Step 3
-   session deliberately paused here):
-   - **Wheel-bundling of `tacon/web/dist/`.** Design doc Step 10 bundles
-     the built SPA into the Python wheel via hatch `force-include` /
-     `shared-data`. The exact packaging config (and whether `dist/`
-     should be gitignored-but-CI-built vs committed) is a
-     confirm-with-user decision — don't guess it. `dist/` is currently
-     gitignored; CI builds it fresh (`make gui-dev` does the same
-     locally).
-   - **Bump to `0.3.0.dev0`.** Still the open versioning question —
-     design doc flagged it; not bumped yet to keep PyPI metadata clean.
+6. **Two Step-3-era decisions, both now RESOLVED:**
+   - **Wheel-bundling of `tacon/web/dist/`** — confirmed: follow the
+     design doc. `dist/` stays gitignored; CI runs `pnpm build` before
+     `python -m build` and `pyproject.toml` force-includes the fresh
+     `dist/`. This is wired at Step 10, not before. When wiring it,
+     also exclude the rest of `tacon/web/` (src, package.json,
+     node_modules) so PyPI users don't get the `.tsx` source.
+   - **Version bump** — done in `96b2a35`: `0.3.0.dev0`.
 7. **Pre-existing TL;DR points still apply:**
-   - **`twine upload dist/tacon-0.2.0*`** — §4.6/§4.8/§4.9 + v0.3
-     Steps 0-3 shipped *after* the 0.2.0 build, so the user should
-     bump version + rebuild before uploading.
+   - **`twine upload`** — the tree is now `0.3.0.dev0`; the next
+     `python -m build` produces `tacon-0.3.0.dev0-*`. To upload the
+     *released* 0.2.0, build from the 0.2.0 commit/tag instead.
    - The SPA needs `node` (≥20) + `pnpm` (≥9) to build. Both were
      present in the Step 3 environment (`node v22`, `pnpm 11`).
 8. Use `/plan-eng-review` for substantial new modules; `/qa` for live
@@ -913,22 +909,19 @@ so the agent picks up exactly where this one left off:
 > that's your target).
 >
 > State: tacon v0.3 GUI is in progress on `main`. Steps 0-3 of 11 are
-> done. Working tree clean. **411 unit tests pass**; ruff + mypy clean
-> across 24 source files. The Step 3 commits (`8a52c31`, `4f16ac2`,
-> `fa8012e`) + the Step 3 handoff-doc commit are **unpushed** — I'll
-> grant the push when ready.
+> done and pushed to `origin/main`. Working tree clean. **411 unit
+> tests pass**; ruff + mypy clean across 24 source files. Version is
+> `0.3.0.dev0`.
 >
 > The SPA scaffold lives at `tacon/web/` (Vite + React + shadcn +
 > TanStack Query). Build it with `make gui-dev` before any live GUI
 > testing. `tacon serve` already serves the built bundle at `/`.
 >
-> **Before implementing Step 4, surface these to me — don't guess:**
-> 1. **Wheel-bundling of `tacon/web/dist/`** (design doc Step 10). I
->    want to decide the hatch packaging config and the
->    gitignored-vs-committed question before it's wired.
-> 2. **The `0.3.0.dev0` version bump** — still open; confirm with me.
+> Two Step-3-era decisions are settled (don't reopen them): wheel-
+> bundling follows the design doc (gitignored `dist/`, CI-built,
+> force-included at Step 10); version is bumped to `0.3.0.dev0`.
 >
-> Then implement **Step 4 — settings page** (~5h) per the design doc:
+> Implement **Step 4 — settings page** (~5h) per the design doc:
 > GitHub token (POST → keyring, fallback to `~/.tacon/.token` with a
 > warning banner), classroom add/list/set-default via the existing
 > `tacon.classes` API, rate limit, default port. Form auto-generated
