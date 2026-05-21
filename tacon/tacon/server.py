@@ -1,18 +1,18 @@
 """FastAPI app for ``tacon serve`` — the v0.3 local web GUI.
 
 Step 1 shipped the skeleton (app factory, host-header allowlist,
-free-port picker, /healthz). Step 2 adds the API surface that the SPA
-talks to:
+free-port picker, /healthz). Step 2 added the API surface that the SPA
+talks to. Step 3 mounts the built SPA itself:
 
+  GET  /                              — the built Vite SPA (tacon/web/dist)
   GET  /api/ops                       — list registered ops + JSON Schema
   POST /api/ops/{name}/plan           — validate args, run plan(), return Diff
   POST /api/ops/{name}/apply          — single-flight apply, returns op_id
   POST /api/ops/{op_id}/rollback      — single-flight rollback
   GET  /api/events?op_id=X&...        — SSE feed of per-repo progress
 
-The SPA + static-file mount lands in Step 3. The settings page lands in
-Step 4. Step 6 (AddFile spine) is what consumes these endpoints
-end-to-end with diff grid + live feed UX.
+The settings page lands in Step 4. Step 6 (AddFile spine) is what
+consumes these endpoints end-to-end with diff grid + live feed UX.
 
 Module-level state:
     * The host-header allowlist + port-picker are unchanged from Step 1.
@@ -449,7 +449,65 @@ def create_app(
 
         return EventSourceResponse(stream())
 
+    # Mount the built SPA last: a StaticFiles mount at "/" is a
+    # catch-all, and Starlette matches routes in registration order, so
+    # /healthz + /api/* above must already be registered to win.
+    _mount_spa(app)
+
     return app
+
+
+# ---------- SPA static-file mount ----------
+
+
+# The Vite build (``cd tacon/web && pnpm install && pnpm build``, or
+# ``make gui-dev``) writes the SPA bundle here. Wheel-bundling of this
+# directory is Step 10 (CI/CD); for the editable-install dev story it's
+# built locally and is absent until then.
+_SPA_BUILD_HINT = "cd tacon/web && pnpm install && pnpm build"
+
+_SPA_NOT_BUILT_HTML = (
+    "<!doctype html><html lang=en><head><meta charset=utf-8>"
+    "<title>tacon</title></head><body>"
+    "<h1>tacon GUI not built yet</h1>"
+    "<p>The web UI bundle is missing. From the repo root run:</p>"
+    f"<pre><code>{_SPA_BUILD_HINT}</code></pre>"
+    "<p>(or <code>make gui-dev</code>), then reload this page.</p>"
+    "</body></html>"
+)
+
+
+def _spa_dist_dir() -> Path:
+    """Directory the Vite build writes the SPA bundle into.
+
+    ``tacon/web/dist/`` — produced by :data:`_SPA_BUILD_HINT`. Absent in
+    a fresh editable install until that build runs. Tests monkeypatch
+    this to point at a temp directory.
+    """
+    return Path(__file__).resolve().parent / "web" / "dist"
+
+
+def _mount_spa(app: FastAPI) -> None:
+    """Serve the built SPA at ``/`` — or a friendly hint if it isn't built.
+
+    When ``tacon/web/dist/index.html`` exists, mount it as static files
+    (``html=True`` so ``/`` resolves to ``index.html``). When it's
+    absent — the normal state of a fresh editable install — register a
+    plain ``GET /`` that points the developer at the one-line build
+    command instead of a bare 404.
+    """
+    from fastapi.responses import HTMLResponse
+    from fastapi.staticfiles import StaticFiles
+
+    dist_dir = _spa_dist_dir()
+    if (dist_dir / "index.html").is_file():
+        app.mount("/", StaticFiles(directory=dist_dir, html=True), name="spa")
+        return
+
+    @app.get("/", response_class=HTMLResponse)
+    async def spa_not_built() -> str:
+        """Placeholder shown when tacon/web/dist/ has not been built."""
+        return _SPA_NOT_BUILT_HTML
 
 
 # ---------- middleware: host-header allowlist ----------
