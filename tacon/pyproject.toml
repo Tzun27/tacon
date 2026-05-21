@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tacon"
-version = "0.2.0"
+version = "0.3.0.dev0"
 description = "TA console: a workbench for GitHub Classroom batch ops + class-health dashboard"
 readme = "README.md"
 requires-python = ">=3.10"
