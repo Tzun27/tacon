@@ -1,0 +1,5 @@
+# pnpm 11 settings file. `allowBuilds` decides which dependencies may run
+# install build scripts. msw is a transitive dep of the shadcn CLI; tacon
+# never uses it, so its build script is skipped.
+allowBuilds:
+  msw: false
