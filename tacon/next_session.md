@@ -6,8 +6,8 @@ GitHub Classroom. **v0.2.0 fully shipped** + the three v0.2.x follow-ups
 (`tacon serve`) for TAs who don't want to use the CLI. The design doc
 lives at `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md`
 (produced via `/office-hours`, survived 2 rounds of adversarial review
-at 8/10). **Steps 0 + 1 + 2 of the build order have shipped** — see -1
-below. **Steps 3-11 remain.** See §9 for the v0.3 roadmap.
+at 8/10). **Steps 0-3 of the build order have shipped** — see -1
+below. **Steps 4-11 remain.** See §9 for the v0.3 roadmap.
 
 This file is your handoff. **Read it top-to-bottom before doing anything
 else.** §-1 (what shipped this session) and §4 (what's left) are the
@@ -60,9 +60,12 @@ two parts you can't skip.
 | `c188a46` | v0.3 Step 2 | **API endpoints + SSE feed** — new module `tacon/server_ops.py` owns the request-body → Op-instance bridge (per-op translation for FixCIWorkflow's transform callable and AddBranchProtection's nested rule). Server gains `GET /api/ops` (list + JSON Schema), `POST /api/ops/{name}/plan` (validates + runs plan(), returns Diff), `POST /api/ops/{name}/apply` (single-flight, returns op_id), `POST /api/ops/{op_id}/rollback`, and `GET /api/events?op_id=X&last_event_id=Y` (SSE with rowid cursor + 5s keep-alive). `_AppState` dataclass holds the in-flight slot; check-and-set is atomic under uvicorn's single event loop. Startup lifespan runs an orphan-sweep that rewrites stale `status='in-progress'` rows to `failed` (`error_class='server_restart'`). PyGithub work goes through `run_in_executor` so the SSE feed stays responsive. |
 | `7b19251` | v0.3 Step 2 | **API + SSE test coverage** — 16 new tests in `test_server_api.py` covering GET /api/ops shape, plan/apply/rollback happy paths + 404/422/503/409, single-flight contention, lock release on completion, apply <500ms (proves background-task offload), SSE 3-repo final-state events, cursor resume w/o duplicates. Two production fixes folded in: host-header middleware moved to pure-ASGI (BaseHTTPMiddleware was buffering SSE bodies), and `api_plan` now opens its DB inside the executor (sqlite3 connections aren't thread-shareable). SSE tests spin up uvicorn in a daemon thread — httpx.ASGITransport buffers the entire body, and TestClient.stream() blocks on unbounded streams, so only a real wire harness works. 12 new tests in `test_server_ops.py` cover the request-body → Op-instance bridge layer in isolation. |
 | `6cb8895` | v0.3 Step 2 | **Drop deprecation warning** — switch from `HTTP_422_UNPROCESSABLE_ENTITY` to `HTTP_422_UNPROCESSABLE_CONTENT` per starlette's RFC 9110 rename. Three call sites updated. |
+| `8a52c31` | v0.3 Step 3 | **Vite + React + shadcn scaffold** — new SPA source tree at `tacon/web/`. Vite 8 + React 19 + TypeScript 6; shadcn/ui primitives (radix-nova preset) generated verbatim into `src/components/ui/` (button, input, textarea, switch, select, card, dialog, badge, progress, table); TanStack Query for the HTTP cache, `QueryClientProvider` wired in `main.tsx`. Boilerplate stripped to a minimal `App.tsx` ("tacon v0.3" heading). Tailwind v4 via `@tailwindcss/vite`; `@/*` path alias. Every dep pinned to an exact version (`package.json`) + `pnpm-lock.yaml` committed for deterministic CI. New `Makefile` with a `gui-dev` target (`pnpm install && pnpm build` in `tacon/web/`). |
+| `4f16ac2` | v0.3 Step 3 | **Serve the built SPA at `/`** — `create_app()` mounts `tacon/web/dist/` as static files (`html=True`) when `dist/index.html` exists; when absent (fresh editable install) `GET /` returns a friendly page pointing at the build one-liner instead of a 404. Mount registered last so the catch-all doesn't shadow `/healthz` + `/api/*`. `_spa_dist_dir()` is a module-level resolver tests monkeypatch. |
+| `fa8012e` | v0.3 Step 3 | **SPA mount test coverage** — new `tests/test_server_spa.py` (4 tests): dist-present serves `index.html` as `text/html`, dist-absent serves the build hint, `/healthz` + `/api/ops` survive the catch-all mount, real resolver targets `tacon/web/dist`. |
 
 **All nine v0.2 items shipped** (§4.1-§4.9). **v0.3 in progress**: Steps
-0 + 1 + 2 done, Steps 3-11 remaining (see §9 below).
+0 + 1 + 2 + 3 done, Steps 4-11 remaining (see §9 below).
 
 ---
 
@@ -72,21 +75,27 @@ two parts you can't skip.
 cd /home/tzun/repos/gstack-test/tacon
 git status --short                   # clean (or just .gitignored .env / .venv / dist / tacon-dashboard)
 git log --oneline | head -5          # tip should be the latest handoff-doc commit
-.venv/bin/pytest -q --no-cov --ignore=tests/live   # 407 unit tests pass in ~30s
+.venv/bin/pytest -q --no-cov --ignore=tests/live   # 411 unit tests pass in ~40s
 .venv/bin/ruff check . && .venv/bin/mypy tacon     # both clean
 ```
 
+To build the GUI bundle (Step 3 onward) you also need `node` (≥20) and
+`pnpm` (≥9). Build it once with `make gui-dev` (or `cd tacon/web &&
+pnpm install && pnpm build`); without that, `tacon serve` shows a
+build-hint page at `/` instead of the SPA.
+
 Expected:
 - The tip of `main` is the latest handoff-doc commit (this one). The
-  Step 0/1/2 v0.3 commits sit above the v0.2.x commits. Most of the
+  Step 0-3 v0.3 commits sit above the v0.2.x commits. Most of the
   v0.2.x work is already pushed to `origin/main`; the v0.3 commits +
   this handoff are unpushed at handoff time.
-- **407 unit tests pass** (+29 since the Step 1 handoff: 1 op_id
-  passthrough + 12 server_ops bridge + 16 API/SSE endpoint tests). 18
-  live unit tests + 1 live skip-on-403 still pass if `TACON_LIVE=1`.
-- Coverage stays above 90% (gate). ruff + mypy clean across **24 source
-  files** (+1 `tacon/server_ops.py` since the Step 1 handoff;
-  `tacon/server.py` grew but stays in the same source tree).
+- **411 unit tests pass** (+4 since the Step 2 handoff: 4 SPA
+  static-file mount tests in `tests/test_server_spa.py`). 18 live unit
+  tests + 1 live skip-on-403 still pass if `TACON_LIVE=1`.
+- Coverage stays above 90% (gate; sits at ~94%). ruff + mypy clean
+  across **24 source files** — `tacon/server.py` grew (SPA mount) but
+  no new Python source module; the SPA lives under `tacon/web/` as a
+  separate JS/TS tree, not Python source.
 
 If any of that fails, **stop and investigate before continuing** — something
 has drifted since this handoff was written.
@@ -134,7 +143,11 @@ tacon/
 ├── server.py                         FastAPI app (`tacon serve`).
 │                                     Step 1 shipped the skeleton; Step 2
 │                                     added GET /api/ops, POST plan/apply,
-│                                     POST rollback, GET /api/events (SSE).
+│                                     POST rollback, GET /api/events (SSE);
+│                                     Step 3 mounts the built SPA at /
+│                                     (_mount_spa + _spa_dist_dir; static
+│                                     files when tacon/web/dist exists,
+│                                     else a build-hint page).
 │                                     _AppState dataclass holds the
 │                                     in-flight slot + GH factory + DB
 │                                     path. Host-allowlist is pure-ASGI
@@ -225,9 +238,19 @@ tacon/
 │   │                                 linger; commits chain to existing tip.
 │   └── templates/
 │       ├── base.html, index.html, op.html, repo.html
-└── tui/
-    ├── __init__.py                   re-exports TaconApp
-    └── app.py                        Textual TUI
+├── tui/
+│   ├── __init__.py                   re-exports TaconApp
+│   └── app.py                        Textual TUI
+└── web/                              v0.3 GUI SPA source (NEW Step 3).
+    │                                 Vite 8 + React 19 + TS 6 + shadcn/ui
+    │                                 (radix-nova) + TanStack Query. NOT
+    │                                 Python — a separate pnpm project.
+    ├── src/App.tsx                   minimal "tacon v0.3" placeholder
+    ├── src/components/ui/*.tsx       10 shadcn primitives (committed)
+    ├── package.json                  exact-pinned deps + pnpm-lock.yaml
+    └── dist/                         `pnpm build` output (gitignored;
+                                      server.py serves it at /). Build
+                                      with `make gui-dev`.
 ```
 
 Five ops registered: `add-file`, `delete-file`, `add-ci-workflow`,
@@ -236,7 +259,7 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
 **Modules starting with `_` are explicitly skipped** — that's why
 `_via_pr.py` is helpers, not an op.
 
-### Tests (tests/, 407 unit + 18 live + 1 skip-on-403 live)
+### Tests (tests/, 411 unit + 18 live + 1 skip-on-403 live)
 
 - `tests/conftest.py` — `tmp_db`, `seed_repos`, `fake_repo`, `fake_gh`
 - `tests/test_db.py` — 23 tests (5 schema-v2 + 5 schema-v3:
@@ -274,6 +297,11 @@ file in `tacon/ops/` and call `register("name", Cls)` at the bottom).
   feed delivers 3 final-state events + cursor resumes from N+1 without
   duplicates). SSE tests use uvicorn-in-a-thread (ASGITransport
   buffers SSE bodies, TestClient.stream() hangs on unbounded streams).
+- `tests/test_server_spa.py` — **4 tests (NEW Step 3)** — GET / serves
+  the built `index.html` as `text/html` when `dist/` exists,
+  build-hint page when it's absent, `/healthz` + `/api/ops` survive
+  the catch-all SPA mount, real `_spa_dist_dir()` targets
+  `tacon/web/dist`. Dist resolver is monkeypatched per-test.
 - `tests/live/` — opt-in live e2e (18 unit + 1 skip-on-403):
   - `test_live_read.py` (7 tests, read-only)
   - `test_live_apply_rollback.py` (2 tests, AddFile direct write+rollback)
@@ -710,7 +738,7 @@ before touching code. Key sections:
   workflow" card's mode-toggle default needs TA usability validation
   before split-into-two-cards decision.
 
-**Build order — Steps 0 + 1 done; 2-11 remain.** Estimated 70 hours total
+**Build order — Steps 0-3 done; 4-11 remain.** Estimated 70 hours total
 (see Next Steps in the design doc for the per-step breakdown).
 
 | Step | Status | Title | Estimated |
@@ -718,8 +746,8 @@ before touching code. Key sections:
 | 0 | ✅ DONE (`ec6d384`) | Op.arg_schema() on all 5 ops | 2.5h |
 | 1 | ✅ DONE (`b2c2318`) + ✅ live-validated | tacon serve skeleton (FastAPI + CLI) | 4h |
 | 2 | ✅ DONE (`0511eb2`+`c188a46`+`7b19251`+`6cb8895`) | API: op listing + plan/apply/rollback + SSE | 10h |
-| 3 | NEXT | Vite + React + shadcn scaffold | 3h |
-| 4 | | Settings page first | 5h |
+| 3 | ✅ DONE (`8a52c31`+`4f16ac2`+`fa8012e`) + ✅ live-validated | Vite + React + shadcn scaffold | 3h |
+| 4 | NEXT | Settings page first | 5h |
 | 5 | | Verb-card home screen | 3h |
 | 5.5 | | Schema-driven form renderer | 6h |
 | 6 | | One op end-to-end: AddFile spine | 24h |
@@ -737,11 +765,17 @@ before touching code. Key sections:
 `/does-not-exist`, `/docs`, `/openapi.json` all 404 (the auto docs are
 intentionally disabled); second-server-same-port exits 2 with a clear
 *"already in use"* message; second-server-auto-pick falls through to
-port 5735. No surprises — the unit tests had it right. **One note for
-Step 3:** `GET /` returns 404 today (no SPA mounted). Once the SPA dist
-is bundled at Step 3/Step 10, `/` needs a static-file mount to serve
-`tacon/web/dist/index.html`. That's the correct skeleton behavior — just
-flagging so the next agent doesn't think the SPA is missing.
+port 5735. No surprises — the unit tests had it right.
+
+**Step 3 update on `GET /`:** the Step-1 skeleton had `GET /` returning
+404 (no SPA mounted). Step 3 fixed that — `create_app()` now mounts
+`tacon/web/dist/` at `/`. When the bundle is built (`make gui-dev`) `/`
+serves `index.html` (200, `text/html`) and `/assets/*` serve the JS/CSS;
+when it's absent `/` returns a friendly build-hint page (still 200, not
+404). Live-validated: booted `tacon serve --no-open --port 5734` with a
+fresh `pnpm build` — `/` → 200 `index.html`, `/assets/*.js` → 200
+`text/javascript`, `/healthz` + `/api/ops` still resolve (mount doesn't
+shadow them), `Host: evil.example.com` → 403.
 
 **Step 2 shipped over 4 commits** (`0511eb2`+`c188a46`+`7b19251`+`6cb8895`)
 and covers everything the design doc spelled out:
@@ -810,10 +844,9 @@ the first bump.
 
 **Don't skip the assignment from the design doc:** *"Before writing
 tacon/server.py: draft the 5 verb-cards in plain Markdown and show them
-to one non-technical TA."* This was already partially done (Step 1
-shipped — the assignment specifically applies to the verb-cards which
-land in Step 5). It's worth doing before Step 5 even if Step 2 is the
-literal next coding step.
+to one non-technical TA."* The assignment specifically applies to the
+verb-cards which land in Step 5. It's worth doing before Step 5 even
+though Step 4 (settings page) is the literal next coding step.
 
 ---
 
@@ -821,52 +854,44 @@ literal next coding step.
 
 1. Run `pytest -q --no-cov --ignore=tests/live`, `ruff check .`,
    `mypy tacon` to confirm nothing broke since the handoff. Expect
-   **407 unit tests passing** (+18 live tests + 1 skip-on-403 if
+   **411 unit tests passing** (+18 live tests + 1 skip-on-403 if
    `TACON_LIVE=1`), ruff clean, mypy clean across **24 source files**.
 2. **v0.3 GUI is in progress.** Read the design doc at
    `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md`
-   end-to-end. Steps 0 + 1 + 2 shipped. **Step 3 is the natural next**:
-   Vite + React + shadcn scaffold (~3h, +1 wheel-bundle plumbing). All
-   the Python-side scaffolding the SPA needs is already on disk.
-3. **Steps 3-11 are ~53 hours over 3 weekends.** Don't try to do it all
+   end-to-end. Steps 0-3 shipped. **Step 4 is the natural next**: the
+   settings page (~5h). The SPA shell is on disk at `tacon/web/`;
+   `create_app()` already serves the built bundle at `/`.
+3. **Steps 4-11 are ~50 hours over 3 weekends.** Don't try to do it all
    in one session. Logical milestones: after Step 5.5 (renderer), after
    Step 6 (AddFile spine — the keystone), after Step 8 (rollback +
    Past Ops), v0.3.0 release.
-4. **Push unpushed commits** — `ec6d384` + `b2c2318` (Steps 0/1) and
-   the 4 Step 2 commits (`0511eb2`, `c188a46`, `7b19251`, `6cb8895`)
-   plus this handoff sit above `origin/main`. Direct push to `main` is
-   blocked by Claude Code's permission default — the user runs
-   `git push origin main` themselves.
+4. **Push unpushed commits** — `ec6d384` + `b2c2318` (Steps 0/1), the 4
+   Step 2 commits (`0511eb2`, `c188a46`, `7b19251`, `6cb8895`), the 3
+   Step 3 commits (`8a52c31`, `4f16ac2`, `fa8012e`) plus this handoff
+   sit above `origin/main`. Direct push to `main` is blocked by Claude
+   Code's permission default — the user runs `git push origin main`
+   themselves.
 5. **For v0.3 work specifically:** the design doc is the contract. Every
    step has an acceptance criterion. Honor them — the spec review
    surfaced 17 gaps that were patched, and skipping the criteria
    re-opens them.
-6. **Step 3 setup checklist** (for the next agent — these aren't done):
-   - Confirm `node` (≥20) + `pnpm` (≥9) are available; if not, the user
-     installs them — Claude Code shouldn't touch system-level package
-     managers without asking. `pnpm` may be installable via
-     `npm install -g pnpm` if `npm` exists.
-   - Create `tacon/web/` with `pnpm init`; add Vite + React + TS
-     scaffold (`pnpm create vite@latest .` then strip the demo). Pin
-     versions in `package.json` so CI is deterministic.
-   - shadcn primitives via `npx shadcn@latest add button input textarea
-     switch select card dialog badge progress table`. The generated
-     `components/ui/*.tsx` files are committed.
-   - Add TanStack Query (`pnpm add @tanstack/react-query`).
-   - **Wire the static-file mount in `tacon/server.py`**: serve
-     `tacon/web/dist/*` at `/`, falling back to a one-line setup hint
-     when the dist directory is absent (per the design doc Distribution
-     Plan).
-   - Acceptance criterion (design doc Step 3): `pnpm build` produces
-     `tacon/web/dist/index.html`; `tacon serve` serves it at `/`;
-     component-mount test passes.
+6. **Before Step 4 — two items need the user's input** (the Step 3
+   session deliberately paused here):
+   - **Wheel-bundling of `tacon/web/dist/`.** Design doc Step 10 bundles
+     the built SPA into the Python wheel via hatch `force-include` /
+     `shared-data`. The exact packaging config (and whether `dist/`
+     should be gitignored-but-CI-built vs committed) is a
+     confirm-with-user decision — don't guess it. `dist/` is currently
+     gitignored; CI builds it fresh (`make gui-dev` does the same
+     locally).
+   - **Bump to `0.3.0.dev0`.** Still the open versioning question —
+     design doc flagged it; not bumped yet to keep PyPI metadata clean.
 7. **Pre-existing TL;DR points still apply:**
    - **`twine upload dist/tacon-0.2.0*`** — §4.6/§4.8/§4.9 + v0.3
-     Steps 0/1/2 shipped *after* the 0.2.0 build, so the user should
+     Steps 0-3 shipped *after* the 0.2.0 build, so the user should
      bump version + rebuild before uploading.
-   - **Bump to 0.3.0.dev0 OPEN QUESTION** — design doc flagged this as
-     a confirm-with-user item; not bumped yet to keep PyPI metadata
-     clean. Address before Step 11 (release).
+   - The SPA needs `node` (≥20) + `pnpm` (≥9) to build. Both were
+     present in the Step 3 environment (`node v22`, `pnpm 11`).
 8. Use `/plan-eng-review` for substantial new modules; `/qa` for live
    GUI testing once a build is shippable; `/review` before each v0.3
    milestone commit.
@@ -883,60 +908,34 @@ so the agent picks up exactly where this one left off:
 > (focus §-1 commit story, §1 code map, §9 v0.3 GUI roadmap) and the
 > design doc at
 > `~/.gstack/projects/tacon/tzun-main-design-20260513-160839.md` (focus
-> the "Op Schema → Form Bridge" section, "Sub-scope for v0.3" items 1-7,
-> "Distribution Plan", and **Step 3 in Next Steps** — that's your
-> target).
+> the "Op Schema → Form Bridge" section, "Sub-scope for v0.3" item 7
+> (settings page), "Distribution Plan", and **Step 4 in Next Steps** —
+> that's your target).
 >
-> State: tacon v0.3 GUI is in progress on `main`. Steps 0 + 1 + 2 of 11
-> are done. Working tree clean. **407 unit tests pass**; ruff + mypy
-> clean across 24 source files. All v0.3 commits pushed to `origin/main`.
+> State: tacon v0.3 GUI is in progress on `main`. Steps 0-3 of 11 are
+> done. Working tree clean. **411 unit tests pass**; ruff + mypy clean
+> across 24 source files. The Step 3 commits (`8a52c31`, `4f16ac2`,
+> `fa8012e`) + the Step 3 handoff-doc commit are **unpushed** — I'll
+> grant the push when ready.
 >
-> Implement **Step 3 — Vite + React + shadcn scaffold** (~3h):
+> The SPA scaffold lives at `tacon/web/` (Vite + React + shadcn +
+> TanStack Query). Build it with `make gui-dev` before any live GUI
+> testing. `tacon serve` already serves the built bundle at `/`.
 >
-> 1. Confirm `node` (≥20) and `pnpm` (≥9) are installed. If either is
->    missing **stop and ask me** — don't try to install them yourself
->    (system-level package managers need my call). Try `node --version`
->    and `pnpm --version` first.
-> 2. Create `tacon/web/` and scaffold a Vite + React + TypeScript project
->    (`pnpm create vite@latest . --template react-ts`, then strip the
->    boilerplate to a minimal `App.tsx` that just renders a placeholder
->    "tacon v0.3" heading). Pin every dependency version in
->    `package.json` so CI is deterministic.
-> 3. Generate the shadcn primitives the design doc names:
->    `npx shadcn@latest add button input textarea switch select card
->    dialog badge progress table`. The generated `components/ui/*.tsx`
->    files are committed.
-> 4. Add TanStack Query: `pnpm add @tanstack/react-query`.
-> 5. Wire **static-file mount in `tacon/server.py`**: serve
->    `tacon/web/dist/*` at `/`, with a clear one-line fallback when the
->    dist directory is absent (mention `cd tacon/web && pnpm install &&
->    pnpm build` per the design-doc Distribution Plan). Update the
->    Step-1 live-validation note in §9 that said `GET /` would 404 —
->    after Step 3 it serves `index.html`.
-> 6. Add a `Makefile` target or short script `make gui-dev` per the
->    design doc that runs `pnpm install && pnpm build` in `tacon/web/`,
->    so the dev story stays one-liner.
-> 7. Tests: one new test in `tests/test_server.py` (or a new
->    `tests/test_server_spa.py`) that:
->    - asserts `GET /` returns 200 + `text/html` when the dist exists
->      (use a tmp dist dir + monkeypatch the dist-resolution path), and
->    - asserts the friendly-fallback string fires when dist is absent.
+> **Before implementing Step 4, surface these to me — don't guess:**
+> 1. **Wheel-bundling of `tacon/web/dist/`** (design doc Step 10). I
+>    want to decide the hatch packaging config and the
+>    gitignored-vs-committed question before it's wired.
+> 2. **The `0.3.0.dev0` version bump** — still open; confirm with me.
 >
->    The acceptance criterion in the design doc is: `pnpm build`
->    produces `tacon/web/dist/index.html`; `tacon serve` serves it at
->    `/`; component-mount test passes.
+> Then implement **Step 4 — settings page** (~5h) per the design doc:
+> GitHub token (POST → keyring, fallback to `~/.tacon/.token` with a
+> warning banner), classroom add/list/set-default via the existing
+> `tacon.classes` API, rate limit, default port. Form auto-generated
+> from a Pydantic settings model. Acceptance: set token in browser →
+> restart server → token retrieved from keyring (Python-level
+> integration test, not Playwright).
 >
-> Commit each logical chunk atomically with the existing prefix
-> convention (`chore(tacon)` for scaffolding, `feat(tacon)` for the
-> static-file mount, `test(tacon)` for the new tests, `docs(tacon)` for
-> the handoff-doc update at the end). Run pytest + ruff + mypy before
-> each commit. Wheel-bundling of `tacon/web/dist/` into the Python
-> package is **Step 10** (CI/CD), not Step 3 — don't bring that
-> forward.
->
-> **Don't** start Step 4 (settings page) in the same session — Step 3 is
-> a natural pause and the wheel-bundling discussion needs my input first.
->
-> Permission to push to `origin main` is not standing — I'll grant it
-> when you're ready. Same for the open `0.3.0.dev0` version bump
-> question.
+> Commit atomically with the existing prefix convention. Run
+> pytest + ruff + mypy before each commit. Permission to push to
+> `origin main` is not standing — I'll grant it when you're ready.
